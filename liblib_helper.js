@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手
 // @namespace    http://tampermonkey.net/
-// @version      0.3
+// @version      0.6
 // @description  liblib助手，下载作者例图、返图、生成信息
 // @author       You
 // @match        https://www.liblib.ai/modelinfo/*
@@ -28,6 +28,7 @@
     }
 
     // 定义全局变量
+    var modelDir;
     var textDesc, uuid, buildId, webid, modelId, modelName, modelVersionId, downloadUrl;
     var page = 1;
     var pageSize = 16;
@@ -241,7 +242,9 @@
 
             modelId = model_data.data.id
             modelName = model_data.data.name;
-            modelName = modelName.replace(/ /g, "_")+"_"+modelVer;
+            modelDir = modelName; // modelName.replace(/ /g, "_");
+            modelName = modelDir+"_"+modelVer;
+            // console.log(modelDir+"/"+modelName);
 
             // 模型信息json信息
             var modelInfoJson = {
@@ -251,10 +254,12 @@
                 webid: webid
             };
 
-            // 创建一个新目录，使用模型名称
-            const newDirHandle = await dirHandle.getDirectoryHandle(modelName, {create: true});
+            // 创建模型目录
+            const modelDirHandle = await dirHandle.getDirectoryHandle(modelDir, {create: true});
+            // 创建模型版本目录
+            const modelVerDirHandle = await modelDirHandle.getDirectoryHandle(modelName, {create: true});
             // 获取文件句柄
-            const savejsonHandle = await newDirHandle.getFileHandle(modelName+".json", { create: true });
+            const savejsonHandle = await modelDirHandle.getFileHandle(modelName+".json", { create: true });
             // 写入模型信息json文件
             const writablejson = await savejsonHandle.createWritable();
             await writablejson.write(JSON.stringify(modelInfoJson));
@@ -262,9 +267,10 @@
 
             const versions = model_data.data.versions;
             for (const verItem of versions){
+                // 匹配版本号
                 if(verItem.id === modelVersionId){
                     const authImages = verItem.imageGroup.images;
-
+                    let isCover = false;
                     const numberInput1 = document.getElementById('numberInput1');
                     numberInput1.setAttribute('value', authImages.length);
                     numberInput1.dispatchEvent(new Event('change'));
@@ -274,13 +280,35 @@
                         const authImageUrl = authImage.imageUrl;
                         var authimageName = authImage.id;
                         var authimageExt = authImageUrl.split("/").pop().split(".").pop();
+                        var tmp = authimageExt.indexOf("?");
+                        if (tmp>0){
+                            authimageExt = authimageExt.substring(0,tmp);
+                        }
+
                         const authImageUuid = authImage.uuid;
+
+                        if(!isCover){
+                            // 下载封面图片
+                            isCover = true;
+                            // 下载图片
+                            const resp_download = await fetch(authImageUrl);
+                            const blob = await resp_download.blob();
+                            // 获取文件句柄
+                            const picHandle = await modelDirHandle.getFileHandle(modelName+"."+authimageExt, { create: true });
+                            // 写入图片
+                            const writable = await picHandle.createWritable();
+                            await writable.write(blob);
+                            await writable.close();
+                        }
+
+
+
                         // 下载图片
                         const resp_download = await fetch(authImageUrl);
                         const blob = await resp_download.blob();
                         // 获取文件句柄
-                        const picHandle = await newDirHandle.getFileHandle(authimageName+"."+authimageExt, { create: true });
-                        // 写入文件
+                        const picHandle = await modelVerDirHandle.getFileHandle(authimageName+"."+authimageExt, { create: true });
+                        // 写入图片
                         const writable = await picHandle.createWritable();
                         await writable.write(blob);
                         await writable.close();
@@ -299,7 +327,7 @@
                             var metainformation = data_img_gen.data.metainformation;
                             // console.log(metainformation);
                             // 获取文件句柄
-                            const savefileHandle = await newDirHandle.getFileHandle(authimageName+".txt", { create: true });
+                            const savefileHandle = await modelVerDirHandle.getFileHandle(authimageName+".txt", { create: true });
                             // 写入文件
                             const writablefile = await savefileHandle.createWritable();
                             await writablefile.write(metainformation);
@@ -368,9 +396,7 @@
 
         modelId = model_data.data.id
         modelName = model_data.data.name;
-        modelName = modelName.replace(/ /g, "_")+"_"+modelVer+"_返图";
-
-
+        modelName = modelName+"_返图"; // modelName.replace(/ /g, "_")+"_返图";
         // 创建一个新目录，使用模型名称
         const newDirHandle = await dirHandle.getDirectoryHandle(modelName, {create: true});
 
@@ -383,7 +409,6 @@
         }
 
         while (true) {
-
             // 请求回图列表
             const response = await fetch(url_community, {
                 method: 'POST',
@@ -413,10 +438,15 @@
                         var imageUrl = picItem.imageUrl;
                         var imageName = picItem.id;
                         var imageExt = imageUrl.split("/").pop().split(".").pop();
+                        var tmp = imageExt.indexOf("?");
+                        if (tmp>0){
+                            imageExt = imageExt.substring(0,tmp);
+                        }
                         // 下载图片
                         const resp_download = await fetch(imageUrl);
                         const blob = await resp_download.blob();
                         // 获取文件句柄
+                        // console.log(imageName+"."+imageExt);
                         const picHandle = await newDirHandle.getFileHandle(imageName+"."+imageExt, { create: true });
                         // 写入文件
                         const writable = await picHandle.createWritable();
