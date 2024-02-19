@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手
 // @namespace    http://tampermonkey.net/
-// @version      0.6
+// @version      1.2
 // @description  liblib助手，下载作者例图、返图、生成信息
 // @author       You
 // @match        https://www.liblib.ai/modelinfo/*
@@ -187,7 +187,7 @@
         // 根据选项卡获取模型版本id
         const div = document.querySelector('.ant-tabs-tab.ant-tabs-tab-active');
         const modelVersionId = parseInt(div.getAttribute('data-node-key'));
-        const modelVer = div.innerText;
+        const modelVer = div.innerText.replace(/ /g, "-").replace(/[/\\?%*:|"<>]/g, '-');
 
         var allElements = document.querySelectorAll('div');
         allElements.forEach(function(element) {
@@ -241,9 +241,12 @@
             if(model_data.code!==0){ return;}
 
             modelId = model_data.data.id
-            modelName = model_data.data.name;
+            modelName = model_data.data.name.replace(/ /g, "-").replace(/[/\\?%*:|"<>]/g, '-');
             modelDir = modelName; // modelName.replace(/ /g, "_");
             modelName = modelDir+"_"+modelVer;
+            if(modelName.slice(-1)==='.'){
+                modelName = modelName.substring(0, modelName.length -1);
+            }
             // console.log(modelDir+"/"+modelName);
 
             // 模型信息json信息
@@ -325,6 +328,15 @@
                         const data_img_gen = await response_img_gen.json();
                         if(data_img_gen.code===0){
                             var metainformation = data_img_gen.data.metainformation;
+                            if(!metainformation){
+                                metainformation = 'prompt:'+data_img_gen.data.prompt +"\n";
+                                metainformation = metainformation + 'negativePrompt:'+data_img_gen.data.negativePrompt +"\n";
+                                metainformation = metainformation + 'modelNames:'+data_img_gen.data.modelNames +"\n";
+                                metainformation = metainformation + 'seed:'+data_img_gen.data.seed +"\n";
+                                metainformation = metainformation + 'samplingMethod:'+data_img_gen.data.samplingMethod +"\n";
+                                metainformation = metainformation + 'samplingStep:'+data_img_gen.data.samplingStep +"\n";
+                                metainformation = metainformation + 'cfgScale:'+data_img_gen.data.cfgScale +"\n";
+                            }
                             // console.log(metainformation);
                             // 获取文件句柄
                             const savefileHandle = await modelVerDirHandle.getFileHandle(authimageName+".txt", { create: true });
@@ -354,7 +366,7 @@
         // 根据选项卡获取模型版本id
         const div = document.querySelector('.ant-tabs-tab.ant-tabs-tab-active');
         const modelVersionId = parseInt(div.getAttribute('data-node-key'));
-        const modelVer = div.innerText;
+        const modelVer = div.innerText.replace(/ /g, "-").replace(/[/\\?%*:|"<>]/g, '-');
 
         // Get the content of the script element
         var scriptContent = document.getElementById('__NEXT_DATA__').textContent;
@@ -395,7 +407,7 @@
         if(model_data.code!==0){ return;}
 
         modelId = model_data.data.id
-        modelName = model_data.data.name;
+        modelName = model_data.data.name.replace(/ /g, "-").replace(/[/\\?%*:|"<>]/g, '-');
         modelName = modelName+"_返图"; // modelName.replace(/ /g, "_")+"_返图";
         // 创建一个新目录，使用模型名称
         const newDirHandle = await dirHandle.getDirectoryHandle(modelName, {create: true});
@@ -465,6 +477,15 @@
                         const data_img_gen = await response_img_gen.json();
                         if(data_img_gen.code===0){
                             var metainformation = data_img_gen.data.metainformation;
+                            if(!metainformation){
+                                metainformation = 'prompt:'+data_img_gen.data.prompt +"\n";
+                                metainformation = metainformation + 'negativePrompt:'+data_img_gen.data.negativePrompt +"\n";
+                                metainformation = metainformation + 'modelNames:'+data_img_gen.data.modelNames +"\n";
+                                metainformation = metainformation + 'seed:'+data_img_gen.data.seed +"\n";
+                                metainformation = metainformation + 'samplingMethod:'+data_img_gen.data.samplingMethod +"\n";
+                                metainformation = metainformation + 'samplingStep:'+data_img_gen.data.samplingStep +"\n";
+                                metainformation = metainformation + 'cfgScale:'+data_img_gen.data.cfgScale +"\n";
+                            }
                             // console.log(metainformation);
                             // 获取文件句柄
                             const savefileHandle = await newDirHandle.getFileHandle(imageName+".txt", { create: true });
