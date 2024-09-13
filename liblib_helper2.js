@@ -8,8 +8,8 @@
 // @match        https://www.liblib.art/modelinfo/*
 // @grant        none
 // @license      MIT License
-// @downloadURL https://update.greasyfork.org/scripts/487166/liblib%E5%8A%A9%E6%89%8B.user.js
-// @updateURL https://update.greasyfork.org/scripts/487166/liblib%E5%8A%A9%E6%89%8B.meta.js
+// @downloadURL https://github.com/kaiery/liblib_helper/blob/main/liblib_helper2.js
+// @updateURL https://github.com/kaiery/liblib_helper/blob/main/liblib_helper2.js
 // ==/UserScript==
 
 (function() {
