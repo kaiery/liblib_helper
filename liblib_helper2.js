@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.3
+// @version      1.0.4
 // @description  liblib助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -170,7 +170,7 @@
 
                     var triggerWord = '触发词：';
                     if ('triggerWord' in verItem && verItem.triggerWord) {
-                        triggerWord = verItem.triggerWord
+                        triggerWord = triggerWord + verItem.triggerWord
                         modelInfoJson.triggerWord = triggerWord
                     } else {
                         triggerWord = triggerWord + "无";
