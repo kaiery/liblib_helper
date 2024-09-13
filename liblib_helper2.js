@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.4
+// @version      1.0.5
 // @description  liblib助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -183,7 +183,7 @@
                     const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".json", {create: true});
                     // 写入模型信息json文件
                     const writablejson = await savejsonHandle.createWritable();
-                    await writablejson.write(JSON.stringify(modelInfoJson));
+                    await writablejson.write(JSON.stringify(modelInfoJson, null, 4));
                     await writablejson.close();
 
                     // 创建模型版本目录
