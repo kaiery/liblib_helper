@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.2
+// @version      1.0.3
 // @description  liblib助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -189,7 +189,7 @@
                     // 创建模型版本目录
                     const modelVerDirHandle = await modelDirHandle.getDirectoryHandle(modelName, {create: true});
                     // 获取文件句柄
-                    const saveExampleHandle = await modelVerDirHandle.getFileHandle(modelName + ".txt", {create: true});
+                    const saveExampleHandle = await modelVerDirHandle.getFileHandle( "example.txt", {create: true});
                     const writableExample = await saveExampleHandle.createWritable();
                     await writableExample.write(triggerWord);
                     await writableExample.close();
