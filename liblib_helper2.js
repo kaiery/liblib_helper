@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
+// @version      1.0.1
 // @description  liblib助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
