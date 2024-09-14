@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.6
+// @version      1.0.8
 // @description  liblib助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -87,9 +87,11 @@
             webid = scriptJson.props.webid;
             //------------
             // 预请求地址
-            var url_acceptor = "https://liblib-api.vibrou.com/api/www/log/acceptor/f?timestamp="+Date.now();
+            var url_acceptor = "https://www.liblib.art/api/www/log/acceptor/f?timestamp="+Date.now();
+            // var url_acceptor = "https://liblib-api.vibrou.com/api/www/log/acceptor/f?timestamp="+Date.now();
             // 模型信息地址
-            var url_model = "https://liblib-api.vibrou.com/api/www/model/getByUuid/" + uuid;
+            var url_model = "https://www.liblib.art/api/www/model/getByUuid/"+uuid+"?timestamp=" + Date.now();
+            // var url_model = "https://liblib-api.vibrou.com/api/www/model/getByUuid/" + uuid;
 
 
             // 发送预请求-------------------------------------------------------
