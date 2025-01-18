@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         liblib助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.22
+// @version      1.0.24
 // @description  liblib助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
 // @match        https://www.liblib.art/modelinfo/*
 // @grant        none
 // @license      MIT License
-// @downloadURL https://github.com/kaiery/liblib_helper/blob/main/liblib_helper3.js
-// @updateURL https://github.com/kaiery/liblib_helper/blob/main/liblib_helper3.js
+// @downloadURL https://update.greasyfork.org/scripts/508360/liblib%E5%8A%A9%E6%89%8B-%E5%B0%81%E9%9D%A2%2B%E6%A8%A1%E5%9E%8B%E4%BF%A1%E6%81%AF.user.js
+// @updateURL https://update.greasyfork.org/scripts/508360/liblib%E5%8A%A9%E6%89%8B-%E5%B0%81%E9%9D%A2%2B%E6%A8%A1%E5%9E%8B%E4%BF%A1%E6%81%AF.meta.js
 // ==/UserScript==
 
 (function () {
