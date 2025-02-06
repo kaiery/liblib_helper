@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.24
+// @version      1.0.25
 // @description  liblib助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -64,7 +64,7 @@
         // 根据选项卡获取模型版本id
         const div = document.querySelector('.ant-tabs-tab.ant-tabs-tab-active');
         const modelVersionId = parseInt(div.getAttribute('data-node-key'));
-        const modelVer = div.innerText.replace(/ /g, "").replace(/[/\\?%*:|"<>]/g, '');
+        const modelVer = div.innerText.replace(/[/\\?%*:|"<>]/g, '-');
 
         const allElements = document.querySelectorAll('div');
         allElements.forEach(function (element) {
@@ -115,16 +115,15 @@
 
             const model_data = await resp.json();
             // console.log("----------模型信息-----------");
-            // console.log(model_data);
+            console.log(model_data);
 
             if (model_data.code !== 0) {
                 return;
             }
 
             modelId = model_data.data.id
-            modelName = model_data.data.name.replace(/ /g, "").replace(/[/\\?%*:|"<>]/g, '');
-            // modelDir = modelName;
-            // modelName = modelDir + "_" + modelVer;
+            modelName = model_data.data.name.replace(/[/\\?%*:|"<>]/g, '-');
+
             model_name_ver = modelName + "_" + modelVer;
             if (model_name_ver.slice(-1) === '.') {
                 model_name_ver = model_name_ver.substring(0, model_name_ver.length - 1);
