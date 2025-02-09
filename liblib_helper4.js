@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.27
+// @version      1.0.28
 // @description  liblib助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -127,7 +127,7 @@
 
             const model_data = await resp.json();
             // console.log("----------模型信息-----------");
-            console.log(model_data);
+            // console.log(model_data);
 
             if (model_data.code !== 0) {
                 return;
@@ -294,7 +294,7 @@
             // 获取模型介绍文本
             textDesc = extractCivitaiTextFromSecondSpoiler();
             // console.log(textDesc)
-
+            console.log('request model info url ');
             // 发送模型信息
             const resp = await fetch(url_model, {
                 method: 'POST',
@@ -369,6 +369,23 @@
                     if (model_name_ver.slice(-1) === '.') {
                         model_name_ver = model_name_ver.substring(0, model_name_ver.length - 1);
                     }
+                    let files = verItem.files;
+
+                    // 弹出选择框---------------------
+                    const selectedObject = await showObjectSelectionDialog(files);
+                    if (!selectedObject) {
+                        return;
+                    }
+                    // end
+                    // console.log("选择的对象:", `提交: ${selectedObject.name} (${selectedObject.sizeKB} KB)`);
+                    // model_name_ver = selectedObject.name
+                    const split = splitFilename(selectedObject.name);
+                    // console.log(`文件名: ${selectedObject.name}`);
+                    // console.log(`  文件名部分: ${split.name}`);
+                    // console.log(`  扩展名: ${split.extension}`);
+                    model_name_ver = split.name;
+
+
                     // 模型介绍
                     textDesc = verItem.description + '\n\n' + textDesc;
                     // 模型信息
@@ -378,6 +395,7 @@
                         modelName: modelName,
                         modelVer: modelVer,
                         modelId: modelId,
+                        modelFile: selectedObject.name,
                         modelVersionId: modelVersionId
                     };
                     // 提示词列表
@@ -536,6 +554,7 @@
                 const url = `https://civitai.com/api/trpc/image.getGenerationData?input=${encodedImageId}`;
 
                 try {
+                    console.log('request image info url ');
                     const response = await fetch(url);
                     if (!response.ok) {
                         alert(`HTTP error! status: ${response.status}`);
@@ -551,6 +570,123 @@
         }
         return exampleList;
     }
+
+    function createSimpleModal(options) {
+        return new Promise((resolve, reject) => {
+            const modal = document.createElement('div');
+            modal.style.position = 'fixed';
+            modal.style.top = '50%';
+            modal.style.left = '50%';
+            modal.style.transform = 'translate(-50%, -50%)';
+            modal.style.backgroundColor = '#fff';
+            modal.style.border = '1px solid #ccc';
+            modal.style.padding = '20px';
+            modal.style.zIndex = '1000';
+            modal.style.boxShadow = '0 4px 8px rgba(0,0,0,0.2)';
+            modal.style.borderRadius = '5px';
+            modal.style.fontFamily = 'Arial, sans-serif';
+
+            const title = document.createElement('h3');
+            title.textContent = options.title || '请选择一个对象';
+            modal.appendChild(title);
+
+            const form = document.createElement('form');
+            form.addEventListener('submit', function(event) {
+                event.preventDefault();
+                const selectedValue = document.querySelector('input[name="objectOption"]:checked')?.value;
+
+                if (!selectedValue) {
+                    // 显示提示信息
+                    alert('请选择一个选项！');
+                    return; // 阻止模态框关闭和 Promise resolve
+                }
+
+                modal.remove();
+                resolve(selectedValue); // Resolve Promise with selected name
+            });
+
+            options.items.forEach(item => {
+                const radioLabel = document.createElement('label');
+                radioLabel.style.display = 'block';
+                radioLabel.style.marginBottom = '5px';
+                const radioInput = document.createElement('input');
+                radioInput.type = 'radio';
+                radioInput.name = 'objectOption';
+                radioInput.value = item.name;
+                radioLabel.appendChild(radioInput);
+                radioLabel.appendChild(document.createTextNode(`${item.name} (${item.sizeKB} KB)`));
+                form.appendChild(radioLabel);
+            });
+
+            const submitButton = document.createElement('button');
+            submitButton.type = 'submit';
+            submitButton.textContent = '提交';
+            submitButton.style.marginTop = '10px';
+            submitButton.style.padding = '8px 12px';
+            submitButton.style.backgroundColor = '#4CAF50';
+            submitButton.style.color = 'white';
+            submitButton.style.border = 'none';
+            submitButton.style.borderRadius = '4px';
+            submitButton.style.cursor = 'pointer';
+            form.appendChild(submitButton);
+
+            modal.appendChild(form);
+            document.body.appendChild(modal);
+
+            // 添加关闭按钮，点击后提示选择
+            const closeButton = document.createElement('button');
+            closeButton.textContent = '关闭';
+            closeButton.style.marginTop = '10px';
+            closeButton.style.padding = '8px 12px';
+            closeButton.style.backgroundColor = '#ccc';
+            closeButton.style.color = 'white';
+            closeButton.style.border = 'none';
+            closeButton.style.borderRadius = '4px';
+            closeButton.style.cursor = 'pointer';
+            closeButton.addEventListener('click', () => {
+                alert('请选择一个选项！');
+            });
+            modal.appendChild(closeButton);
+        });
+    }
+
+    async function showObjectSelectionDialog(objects) {
+        const selectedName = await createSimpleModal({
+            title: '选择要提交的对象',
+            items: objects
+        });
+
+        if (selectedName) {
+            const selectedObject = objects.find(obj => obj.name === selectedName);
+            return selectedObject; // Return selected object
+        } else {
+            return null; // Return null if no object selected
+        }
+    }
+    function splitFilename(filename) {
+        if (!filename || typeof filename !== 'string') {
+            return { name: '', extension: null }; // 处理空字符串或无效输入
+        }
+
+        const lastDotIndex = filename.lastIndexOf('.');
+
+        if (lastDotIndex === -1) {
+            return { name: filename, extension: null }; // 没有扩展名
+        }
+
+        const name = filename.substring(0, lastDotIndex);
+        const extension = filename.substring(lastDotIndex + 1);
+
+        return { name: name, extension: extension };
+    }
+
+
+
+
+
+
+
+
 
     // ---------------------------------------------------------------
     // 创建按钮
