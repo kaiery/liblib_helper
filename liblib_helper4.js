@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         liblib助手-封面+模型信息
+// @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.28
-// @description  liblib助手，下载封面+模型信息
+// @version      1.0.29
+// @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
 // @match        https://www.liblib.art/modelinfo/*
@@ -370,21 +370,30 @@
                         model_name_ver = model_name_ver.substring(0, model_name_ver.length - 1);
                     }
                     let files = verItem.files;
+                    let modelFile = '';
+                    let split = '';
+                    console.log(files);
 
-                    // 弹出选择框---------------------
-                    const selectedObject = await showObjectSelectionDialog(files);
-                    if (!selectedObject) {
-                        return;
+                    if (files.length === 1){
+                        modelFile = files[0].name;
+                        split = splitFilename(modelFile);
+                        model_name_ver = split.name;
+                    }else{
+                        // 弹出选择模型文件框---------------------
+                        const selectedObject = await showObjectSelectionDialog(files);
+                        if (!selectedObject) {
+                            return;
+                        }
+                        // end
+                        // console.log("选择的对象:", `提交: ${selectedObject.name} (${selectedObject.sizeKB} KB)`);
+                        // model_name_ver = selectedObject.name
+                        modelFile = selectedObject.name;
+                        split = splitFilename(modelFile);
+                        // console.log(`文件名: ${selectedObject.name}`);
+                        // console.log(`  文件名部分: ${split.name}`);
+                        // console.log(`  扩展名: ${split.extension}`);
+                        model_name_ver = split.name;
                     }
-                    // end
-                    // console.log("选择的对象:", `提交: ${selectedObject.name} (${selectedObject.sizeKB} KB)`);
-                    // model_name_ver = selectedObject.name
-                    const split = splitFilename(selectedObject.name);
-                    // console.log(`文件名: ${selectedObject.name}`);
-                    // console.log(`  文件名部分: ${split.name}`);
-                    // console.log(`  扩展名: ${split.extension}`);
-                    model_name_ver = split.name;
-
 
                     // 模型介绍
                     textDesc = verItem.description + '\n\n' + textDesc;
@@ -395,7 +404,7 @@
                         modelName: modelName,
                         modelVer: modelVer,
                         modelId: modelId,
-                        modelFile: selectedObject.name,
+                        modelFile: modelFile,
                         modelVersionId: modelVersionId
                     };
                     // 提示词列表
