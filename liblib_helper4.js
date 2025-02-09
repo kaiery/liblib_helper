@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.26
+// @version      1.0.27
 // @description  liblib助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -384,7 +384,11 @@
                     const promptList = []
 
                     // 图片信息-------------
-                    const authImages = verItem.images;
+                    let authImages = verItem.images;
+
+                    authImages = authImages.filter(item => item && item.type === 'image');
+
+                    // console.log(authImages);
                     let images = [];
                     for (const img of authImages){
                         if(img.type === 'image'){
@@ -422,6 +426,7 @@
                             authimageExt = authimageExt.substring(0, tmp);
                         }
                         if (!isCover) {
+                            // console.log(authImageUrl)
                             // 下载封面图片
                             isCover = true;
                             // 下载图片
