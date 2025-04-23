@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.30
+// @version      1.0.31
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -294,7 +294,7 @@
             // 获取模型介绍文本
             textDesc = extractCivitaiTextFromSecondSpoiler();
             // console.log(textDesc)
-            console.log('request model info url ');
+            console.log('request model info url');
             // 发送模型信息
             const resp = await fetch(url_model, {
                 method: 'POST',
@@ -372,7 +372,7 @@
                     let files = verItem.files;
                     let modelFile = '';
                     let split = '';
-                    console.log(files);
+                    // console.log(files);
 
                     if (files.length === 1){
                         modelFile = files[0].name;
@@ -440,6 +440,10 @@
                                 if (meta !== undefined && itemType === 'image') {
                                     const promptMeta = {
                                         prompt:meta.prompt,
+                                        negativePrompt:meta.negativePrompt,
+                                        sampler:meta.sampler,
+                                        cfgScale:meta.cfgScale,
+                                        steps:meta.steps,
                                         Size:meta.Size
                                     };
                                     promptList.push(promptMeta);
