@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.33
+// @version      1.0.34
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -628,7 +628,7 @@
             return null; // 或者返回一个空字符串 ""
         }
         // 获取第二个元素
-        const secondSpoiler = spoilerElements[1];
+        const secondSpoiler = spoilerElements[0];
         // 提取文本内容，并替换 <p> 标签为换行符
         return extractCivitaiText(secondSpoiler);
     }
