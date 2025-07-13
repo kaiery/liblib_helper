@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.34
+// @version      1.0.35
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -396,7 +396,7 @@
                     }
 
                     // 模型介绍
-                    textDesc = verItem.description + '\n\n' + textDesc;
+                    textDesc = verItem.description + '\n\n' + textDesc + '\n\n' + model_data.description;
                     // 模型信息
                     let modelInfoJson = {
                         modelType: modelTypeName,
