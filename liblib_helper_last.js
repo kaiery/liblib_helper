@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.36
+// @version      1.0.37
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -236,10 +236,16 @@
                     // 创建模型目录( 模型+版本名 )
                     const modelDirHandle = await dirHandle.getDirectoryHandle(model_name_ver, {create: true});
                     // 获取文件句柄
-                    const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".json", {create: true});
+                    const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".txt", {create: true});
                     // 写入模型信息json文件
                     const writablejson = await savejsonHandle.createWritable();
-                    await writablejson.write(JSON.stringify(modelInfoJson, null, 4));
+                    // 将 modelInfoJson 的每个字段转成单独一行文本
+                    const lines = [];
+                    for (const [key, value] of Object.entries(modelInfoJson)) {
+                        lines.push(`${key}: ${value}`);
+                    }
+                    const modelInfoText = lines.join('\n');
+                    await writablejson.write(modelInfoText);
                     await writablejson.close();
 
                     // 创建模型版本目录
@@ -294,7 +300,7 @@
             // 获取模型介绍文本
             textDesc = extractCivitaiTextFromSecondSpoiler();
             // console.log(textDesc)
-            console.log('request model info url');
+            // console.log('request model info url');
             // 发送模型信息
             const resp = await fetch(url_model, {
                 method: 'POST',
@@ -312,14 +318,14 @@
             // 检查 data 是否为空
             if (!model_data) {
                 console.log(`模型信息为空 *************************************************************`);
-                alert(`模型信息为空`);
+                // alert(`模型信息为空`);
                 return;
             }
 
             //检查 data 是否包含 error 和 message
             if (model_data.message && model_data.error) {
                 console.log(`数据为空 *************************************************************`);
-                alert(`数据为空`);
+                // alert(`数据为空`);
                 return;
             }
             // console.log("----------模型信息-----------");
@@ -413,22 +419,21 @@
                     // 图片信息-------------
                     let authImages = verItem.images;
 
-                    authImages = authImages.filter(item => item && item.type === 'image');
+                    authImages = authImages.filter(item => item && (item.type === 'image' || item.type === 'video'));
 
                     // console.log(authImages);
                     let images = [];
                     for (const img of authImages){
-                        if(img.type === 'image'){
+                        if(img.type === 'image' || img.type === 'video'){
                             images.push(img);
                         }
                     }
-
                     // 获取样图id数组-------------------
                     const imageIds = getImageIds(images); // 直接调用，getImageIds 应该是同步的
                     if (imageIds.length > 0) {
                         // 获取样图信息
                         example = await getImageExample(imageIds);
-                        // console.log(JSON.stringify(example, null, 4));
+                        // console.log(`example: ${JSON.stringify(example, null, 4)}`);
                         // 🌟🌟🌟 在这里立即继续编写逻辑 🌟🌟🌟
                         // 安全地使用 'example' 数组，因为它已经被赋值
                         if (example.length > 0) {
@@ -437,7 +442,7 @@
                                 // console.log("Processing item:", item);
                                 let itemType = item?.result?.data?.json?.type ?? undefined;
                                 let meta = item?.result?.data?.json?.meta ?? undefined;
-                                if (meta !== undefined && itemType === 'image') {
+                                if (meta !== undefined && (itemType === 'image' || itemType === 'video')) {
                                     const promptMeta = {
                                         prompt:meta.prompt,
                                         negativePrompt:meta.negativePrompt,
@@ -658,6 +663,7 @@
             const A = url.split('/').pop(); // 使用 pop() 更简洁地获取最后一个元素
             const imgId = A.split('.')[0];
             imageIds.push(imgId);
+            console.log(`imgId: ${imgId}`);
         }
         return imageIds;
     }
