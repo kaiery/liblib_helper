@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.37
+// @version      1.0.38
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -42,9 +42,9 @@
     // ---------------------------------------------------------------
     async function createDirectory() {
         // open directory picker
-        const dirHandle = await window.showDirectoryPicker({mode: "readwrite"});
+        const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
         // create a new directory named 'newDir'
-        const newDirHandle = await dirHandle.getDirectoryHandle('newDir', {create: true});
+        const newDirHandle = await dirHandle.getDirectoryHandle('newDir', { create: true });
         console.log(newDirHandle);
     }
 
@@ -71,7 +71,7 @@
         let modelType = 1;
 
         // open directory picker
-        const dirHandle = await window.showDirectoryPicker({mode: "readwrite"});
+        const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
 
         // 根据选项卡获取模型版本id
         const div = document.querySelector('.ant-tabs-tab.ant-tabs-tab-active');
@@ -113,7 +113,7 @@
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({timestamp: Date.now()})
+                body: JSON.stringify({ timestamp: Date.now() })
             })
 
             // 发送模型信息
@@ -122,7 +122,7 @@
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({timestamp: Date.now()})
+                body: JSON.stringify({ timestamp: Date.now() })
             })
 
             const model_data = await resp.json();
@@ -213,7 +213,7 @@
                             const blob = await resp_download.blob();
                             // 获取文件句柄
                             const fileName = model_name_ver + "." + authimageExt;
-                            const picHandle = await dirHandle.getFileHandle(fileName, {create: true});
+                            const picHandle = await dirHandle.getFileHandle(fileName, { create: true });
                             // 写入图片
                             const writable = await picHandle.createWritable();
                             await writable.write(blob);
@@ -234,9 +234,9 @@
                     modelInfoJson.triggerWord = triggerWord
 
                     // 创建模型目录( 模型+版本名 )
-                    const modelDirHandle = await dirHandle.getDirectoryHandle(model_name_ver, {create: true});
+                    const modelDirHandle = await dirHandle.getDirectoryHandle(model_name_ver, { create: true });
                     // 获取文件句柄
-                    const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".txt", {create: true});
+                    const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".txt", { create: true });
                     // 写入模型信息json文件
                     const writablejson = await savejsonHandle.createWritable();
                     // 将 modelInfoJson 的每个字段转成单独一行文本
@@ -251,7 +251,7 @@
                     // 创建模型版本目录
                     // const modelVerDirHandle = await modelDirHandle.getDirectoryHandle(modelName, {create: true});
                     // 获取文件句柄
-                    const saveExampleHandle = await modelDirHandle.getFileHandle("example.txt", {create: true});
+                    const saveExampleHandle = await modelDirHandle.getFileHandle("example.txt", { create: true });
                     const writableExample = await saveExampleHandle.createWritable();
                     await writableExample.write(triggerWord + '\n\n');
                     // 写入字符串数组
@@ -283,7 +283,7 @@
         let example = []
 
         // open directory picker
-        const dirHandle = await window.showDirectoryPicker({mode: "readwrite"});
+        const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
 
 
         // 获取模型id和模型版本id
@@ -307,7 +307,7 @@
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({timestamp: Date.now()})
+                body: JSON.stringify({ timestamp: Date.now() })
             })
             if (!resp.ok) {
                 console.log(`HTTP error! status: ${resp.status}`);
@@ -359,8 +359,8 @@
                     modelTypeName = 'WILDCARDS'
                     break;
             }
-            if(modelTypeName === '未分类'){
-                if('type' in model_data){
+            if (modelTypeName === '未分类') {
+                if ('type' in model_data) {
                     modelTypeName = model_data.type
                 }
             }
@@ -380,11 +380,11 @@
                     let split = '';
                     // console.log(files);
 
-                    if (files.length === 1){
+                    if (files.length === 1) {
                         modelFile = files[0].name;
                         split = splitFilename(modelFile);
-                        model_name_ver = split.name;
-                    }else{
+                        model_name_ver = split.name.trimEnd();
+                    } else {
                         // 弹出选择模型文件框---------------------
                         const selectedObject = await showObjectSelectionDialog(files);
                         if (!selectedObject) {
@@ -423,8 +423,8 @@
 
                     // console.log(authImages);
                     let images = [];
-                    for (const img of authImages){
-                        if(img.type === 'image' || img.type === 'video'){
+                    for (const img of authImages) {
+                        if (img.type === 'image' || img.type === 'video') {
                             images.push(img);
                         }
                     }
@@ -444,12 +444,12 @@
                                 let meta = item?.result?.data?.json?.meta ?? undefined;
                                 if (meta !== undefined && (itemType === 'image' || itemType === 'video')) {
                                     const promptMeta = {
-                                        prompt:meta.prompt,
-                                        negativePrompt:meta.negativePrompt,
-                                        sampler:meta.sampler,
-                                        cfgScale:meta.cfgScale,
-                                        steps:meta.steps,
-                                        Size:meta.Size
+                                        prompt: meta.prompt,
+                                        negativePrompt: meta.negativePrompt,
+                                        sampler: meta.sampler,
+                                        cfgScale: meta.cfgScale,
+                                        steps: meta.steps,
+                                        Size: meta.Size
                                     };
                                     promptList.push(promptMeta);
                                 }
@@ -475,7 +475,7 @@
                             const blob = await resp_download.blob();
                             // 获取文件句柄
                             const fileName = model_name_ver + "." + authimageExt;
-                            const picHandle = await dirHandle.getFileHandle(fileName, {create: true});
+                            const picHandle = await dirHandle.getFileHandle(fileName, { create: true });
                             // 写入图片
                             const writable = await picHandle.createWritable();
                             await writable.write(blob);
@@ -495,16 +495,16 @@
                     // console.log(JSON.stringify(modelInfoJson, null, 4));
 
                     // 创建模型目录( 模型+版本名 )
-                    const modelDirHandle = await dirHandle.getDirectoryHandle(model_name_ver, {create: true});
+                    const modelDirHandle = await dirHandle.getDirectoryHandle(model_name_ver, { create: true });
                     // 获取文件句柄
-                    const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".txt", {create: true});
+                    const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".txt", { create: true });
                     // 写入模型信息json文件
                     const writablejson = await savejsonHandle.createWritable();
                     await writablejson.write(flattenObjectToPlainTextWithHtmlHandling(modelInfoJson));
                     await writablejson.close();
 
                     // 获取文件句柄
-                    const saveExampleHandle = await modelDirHandle.getFileHandle("example.txt", {create: true});
+                    const saveExampleHandle = await modelDirHandle.getFileHandle("example.txt", { create: true });
                     const writableExample = await saveExampleHandle.createWritable();
                     await writableExample.write(triggerWord + '\n\n');
                     // 写入字符串数组
@@ -715,7 +715,7 @@
             modal.appendChild(title);
 
             const form = document.createElement('form');
-            form.addEventListener('submit', function(event) {
+            form.addEventListener('submit', function (event) {
                 event.preventDefault();
                 const selectedValue = document.querySelector('input[name="objectOption"]:checked')?.value;
 
@@ -897,7 +897,7 @@
             });
         });
 
-        observer.observe(document.body, {childList: true, subtree: true});
+        observer.observe(document.body, { childList: true, subtree: true });
     }
 
     // ---------------------------------------------------------------
