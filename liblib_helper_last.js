@@ -76,7 +76,7 @@
         // 根据选项卡获取模型版本id
         const div = document.querySelector('.ant-tabs-tab.ant-tabs-tab-active');
         const modelVersionId = parseInt(div.getAttribute('data-node-key'));
-        const modelVer = div.innerText.replace(/[/\\?%*:|"<>]/g, '-');
+        const modelVer = div.innerText.replace(/[/\\?%*:|"<>~]/g, '-');
 
         const allElements = document.querySelectorAll('div');
         allElements.forEach(function (element) {
@@ -134,7 +134,7 @@
             }
 
             modelId = model_data.data.id
-            modelName = model_data.data.name.replace(/[/\\?%*:|"<>]/g, '-');
+            modelName = model_data.data.name.replace(/[/\\?%*:|"<>~]/g, '-');
 
             model_name_ver = modelName + "_" + modelVer;
             if (model_name_ver.slice(-1) === '.') {
@@ -332,7 +332,7 @@
             // console.log(JSON.stringify(model_data, null, 4));
             // console.log(JSON.stringify(model_data));
 
-            modelName = model_data.name.replace(/[/\\?%*:|"<>]/g, '-');
+            modelName = model_data.name.replace(/[/\\?%*:|"<>~]/g, '-');
 
             let modelType = model_data.modelType // 1:CheckPoint 2:embedding；3：HYPERNETWORK ；4：AESTHETIC GRADIENT; 5：Lora；6：LyCORIS;  9:WILDCARDS
             let modelTypeName = '未分类'
