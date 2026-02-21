@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.40
+// @version      1.0.41
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
 // @match        https://www.liblib.art/modelinfo/*
 // @match        https://civitai.com/models/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
 // @license      MIT License
 // @downloadURL https://update.greasyfork.org/scripts/508360/liblib%7Ccivitai%E5%8A%A9%E6%89%8B-%E5%B0%81%E9%9D%A2%2B%E6%A8%A1%E5%9E%8B%E4%BF%A1%E6%81%AF.user.js
 // @updateURL https://update.greasyfork.org/scripts/508360/liblib%7Ccivitai%E5%8A%A9%E6%89%8B-%E5%B0%81%E9%9D%A2%2B%E6%A8%A1%E5%9E%8B%E4%BF%A1%E6%81%AF.meta.js
@@ -36,6 +36,32 @@
             return 'unknown';
         }
     };
+
+    // ---------------------------------------------------------------
+    // 封装 GM_xmlhttpRequest 以模拟 fetch
+    // ---------------------------------------------------------------
+    function gmFetch(url) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: "GET",
+                url: url,
+                responseType: "blob",
+                onload: (response) => {
+                    if (response.status >= 200 && response.status < 300) {
+                        resolve({
+                            ok: true,
+                            blob: () => Promise.resolve(response.response)
+                        });
+                    } else {
+                        reject(new Error(`HTTP error! status: ${response.status}`));
+                    }
+                },
+                onerror: (error) => {
+                    reject(error);
+                }
+            });
+        });
+    }
 
     // ---------------------------------------------------------------
     // demo
@@ -209,7 +235,7 @@
                             // 下载封面图片
                             isCover = true;
                             // 下载图片
-                            const resp_download = await fetch(authImageUrl);
+                            const resp_download = await gmFetch(authImageUrl);
                             const blob = await resp_download.blob();
                             // 获取文件句柄
                             const fileName = model_name_ver + "." + authimageExt;
@@ -471,7 +497,7 @@
                             // 下载封面图片
                             isCover = true;
                             // 下载图片
-                            const resp_download = await fetch(authImageUrl);
+                            const resp_download = await gmFetch(authImageUrl);
                             const blob = await resp_download.blob();
                             // 获取文件句柄
                             const fileName = model_name_ver + "." + authimageExt;
