@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      1.0.41
+// @version      2.0.0
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
 // @match        https://www.liblib.art/modelinfo/*
 // @match        https://civitai.com/models/*
 // @grant        GM_xmlhttpRequest
+// @connect      *
 // @license      MIT License
 // @downloadURL https://update.greasyfork.org/scripts/508360/liblib%7Ccivitai%E5%8A%A9%E6%89%8B-%E5%B0%81%E9%9D%A2%2B%E6%A8%A1%E5%9E%8B%E4%BF%A1%E6%81%AF.user.js
 // @updateURL https://update.greasyfork.org/scripts/508360/liblib%7Ccivitai%E5%8A%A9%E6%89%8B-%E5%B0%81%E9%9D%A2%2B%E6%A8%A1%E5%9E%8B%E4%BF%A1%E6%81%AF.meta.js
@@ -24,6 +25,12 @@
     var pageSize = 16;
     var sortType = 0;
     const default_download_pic_num = 100;
+    // 封面选择模式：
+    // - image：封面优先选图片；若无图片则兜底选第一个媒体
+    // - video：封面优先选视频；若无视频则兜底选第一个图片，再兜底第一个媒体
+    let coverSaveMode = 'image';
+    // 是否下载 model_name_ver 子文件夹内的媒体图片（封面始终下载，不受该开关影响）
+    let downloadImages = true;
 
 
     // 获取当前站点
@@ -38,28 +45,411 @@
     };
 
     // ---------------------------------------------------------------
-    // 封装 GM_xmlhttpRequest 以模拟 fetch
+    // 下载相关工具函数（用于绕过 CORS、支持进度、支持 Range 分片等）
     // ---------------------------------------------------------------
-    function gmFetch(url) {
+    // 清洗 URL：从可能带反引号/空格的字符串中提取并规范化为可请求的 http(s) URL
+    function normalizeUrl(url) {
+        const rawUrl = String(url || '').trim();
+        const extractedUrl = rawUrl.match(/https?:\/\/[^\s"'`<>]+/i)?.[0] ?? '';
+        const cleanUrl = extractedUrl.replace(/[\u0060\u00B4\u2018\u2019\u201C\u201D\uFF40]/g, '').trim();
+        if (!/^https?:\/\//i.test(cleanUrl)) {
+            throw new Error(`invalid url: ${url}`);
+        }
+        return cleanUrl;
+    }
+
+    // 处理文件名中的非法字符，避免 Windows 写文件失败
+    function sanitizeFilename(name) {
+        let out = String(name || '');
+        out = out.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
+        out = out.replace(/\s+/g, ' ').trim();
+        out = out.replace(/[. ]+$/g, '');
+        return out;
+    }
+
+    // 生成子文件夹内媒体文件名：优先使用 URL 末段文件名，取不到时用“fallbackBase + 时间戳”兜底
+    function buildMediaFilenameFromUrl(url, fallbackBase, fallbackExt) {
+        let cleanUrl;
+        try {
+            cleanUrl = normalizeUrl(url);
+        } catch (_) {
+            cleanUrl = '';
+        }
+
+        if (cleanUrl) {
+            try {
+                const u = new URL(cleanUrl);
+                const lastSeg = u.pathname.split('/').filter(Boolean).pop() || '';
+                const decoded = decodeURIComponent(lastSeg);
+                const candidate = sanitizeFilename(decoded);
+                if (candidate) {
+                    if (candidate.includes('.')) {
+                        return candidate;
+                    }
+                    const ext = sanitizeFilename(fallbackExt || '');
+                    return ext ? `${candidate}.${ext}` : candidate;
+                }
+            } catch (_) {
+            }
+        }
+
+        const base = sanitizeFilename(fallbackBase || 'file') || 'file';
+        const ext = sanitizeFilename(fallbackExt || '');
+        const ts = Date.now();
+        return ext ? `${base}_${ts}.${ext}` : `${base}_${ts}`;
+    }
+
+    // 获取不重名的文件句柄：若文件名已存在则自动追加 _1/_2…，避免覆盖
+    async function getUniqueFileHandle(dirHandle, desiredFilename) {
+        const safeDesired = sanitizeFilename(desiredFilename);
+        const split = splitFilename(safeDesired);
+        const base = split.name || 'file';
+        const ext = split.extension ? `.${split.extension}` : '';
+
+        for (let i = 0; i < 200; i++) {
+            const name = i === 0 ? `${base}${ext}` : `${base}_${i}${ext}`;
+            try {
+                await dirHandle.getFileHandle(name);
+            } catch (_) {
+                const handle = await dirHandle.getFileHandle(name, { create: true });
+                return { handle, name };
+            }
+        }
+
+        const fallback = `${base}_${Date.now()}${ext}`;
+        const handle = await dirHandle.getFileHandle(fallback, { create: true });
+        return { handle, name: fallback };
+    }
+
+    // 从 GM_xmlhttpRequest 的 responseHeaders 文本中提取指定 header（不区分大小写）
+    function parseHeaderValue(responseHeaders, headerName) {
+        const match = String(responseHeaders || '').match(new RegExp(`^\\s*${headerName}\\s*:\\s*([^\\r\\n;]+)`, 'im'));
+        return match?.[1]?.trim() || '';
+    }
+
+    // 判断是否为视频扩展名（用于选择 Range 分片下载策略）
+    function isVideoExt(ext) {
+        return /^(mp4|webm|mov|m4v)$/i.test(String(ext || '').trim());
+    }
+
+    // 把按钮当作进度条：用背景渐变显示 0~100%，并在完成后恢复原样
+    function createButtonProgressController(buttonEl) {
+        if (!buttonEl) return null;
+        const originalText = buttonEl.textContent || '';
+        const originalStyle = buttonEl.getAttribute('style') || '';
+        const originalDisabled = !!buttonEl.disabled;
+        let targetPercent = 0;
+        let targetText = originalText;
+        let rafId = 0;
+
+        const render = () => {
+            rafId = 0;
+            const pct = Math.max(0, Math.min(100, Math.round(Number(targetPercent) || 0)));
+            const fill = '#4CAF50';
+            const base = '#1E88E5';
+            buttonEl.style.background = `linear-gradient(90deg, ${fill} ${pct}%, ${base} ${pct}%)`;
+            buttonEl.textContent = `${targetText} ${pct}%`;
+        };
+
+        const scheduleRender = () => {
+            if (rafId) return;
+            rafId = requestAnimationFrame(render);
+        };
+
+        const api = {
+            start() {
+                buttonEl.disabled = true;
+                api.setProgress(0, originalText);
+            },
+            setProgress(percent, text) {
+                targetPercent = percent;
+                if (typeof text === 'string' && text.length > 0) {
+                    targetText = text;
+                }
+                scheduleRender();
+            },
+            reset() {
+                if (rafId) cancelAnimationFrame(rafId);
+                rafId = 0;
+                if (originalStyle) buttonEl.setAttribute('style', originalStyle);
+                else buttonEl.removeAttribute('style');
+                buttonEl.textContent = originalText;
+                buttonEl.disabled = originalDisabled;
+            },
+            resetAfter(ms) {
+                const delay = Number(ms) || 0;
+                if (delay <= 0) {
+                    api.reset();
+                    return;
+                }
+                setTimeout(() => api.reset(), delay);
+            }
+        };
+
+        return api;
+    }
+
+    // 发起二进制请求的底层封装（返回 ArrayBuffer），可附带自定义 headers（如 Range）
+    function gmRequestArrayBuffer(targetUrl, extraHeaders, timeoutMs) {
+        const headers = Object.assign({
+            Referer: window.location.href,
+            Origin: window.location.origin,
+            Accept: "*/*"
+        }, extraHeaders || {});
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "GET",
-                url: url,
-                responseType: "blob",
+                url: targetUrl,
+                headers,
+                responseType: "arraybuffer",
+                timeout: timeoutMs,
+                anonymous: false,
+                onload: (response) => resolve(response),
+                onerror: (error) => reject(error),
+                ontimeout: () => reject(new Error('timeout'))
+            });
+        });
+    }
+
+    // 单次下载（适合图片）：支持 GM_xmlhttpRequest onprogress 获取 loaded/total，从而更新进度
+    // 另外会尝试把 image.civitai.com 解析为最终跳转后的真实 CDN 地址再下载，提高成功率
+    async function gmDownloadToFile(url, fileHandle, options) {
+        const cleanUrl = normalizeUrl(url);
+        let downloadUrl = cleanUrl;
+        try {
+            if (new URL(cleanUrl).hostname.includes('image.civitai.com')) {
+                const resp = await fetch(cleanUrl, { mode: 'no-cors', credentials: 'include', redirect: 'follow' });
+                const redirectedUrl = resp?.url ? String(resp.url) : '';
+                if (/^https?:\/\//i.test(redirectedUrl)) {
+                    downloadUrl = normalizeUrl(redirectedUrl);
+                }
+            }
+        } catch (_) {
+        }
+
+        const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null;
+        const timeoutMs = typeof options?.timeoutMs === 'number' ? options.timeoutMs : 30000;
+
+        const headers = Object.assign({
+            Referer: window.location.href,
+            Origin: window.location.origin,
+            Accept: "*/*"
+        }, options?.headers || {});
+
+        const writable = await fileHandle.createWritable();
+        try {
+            const resp = await new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: "GET",
+                    url: downloadUrl,
+                    headers,
+                    responseType: "arraybuffer",
+                    timeout: timeoutMs,
+                    anonymous: false,
+                    onprogress: (e) => {
+                        if (!onProgress) return;
+                        const loadedBytes = typeof e?.loaded === 'number' ? e.loaded : 0;
+                        const totalBytes = typeof e?.total === 'number' ? e.total : null;
+                        const percent = totalBytes ? Math.min(100, Math.floor((loadedBytes / totalBytes) * 100)) : 0;
+                        onProgress({ loadedBytes, totalBytes, percent });
+                    },
+                    onload: (response) => resolve(response),
+                    onerror: (error) => reject(error),
+                    ontimeout: () => reject(new Error('timeout'))
+                });
+            });
+
+            if (resp.status < 200 || resp.status >= 300) {
+                throw new Error(`HTTP error! status: ${resp.status}`);
+            }
+
+            await writable.write(new Uint8Array(resp.response));
+            if (onProgress) {
+                onProgress({ loadedBytes: resp.response.byteLength, totalBytes: resp.response.byteLength, percent: 100 });
+            }
+        } finally {
+            await writable.close();
+        }
+    }
+
+    // Range 分片下载（适合视频/大文件）：按 chunkSize 循环请求 bytes=... 并顺序写入文件
+    // - 支持重试
+    // - 通过 Content-Range/Content-Length 推导总大小，计算整体进度
+    // - 同样会尝试解析 image.civitai.com 的真实下载地址
+    async function gmDownloadRangeToFile(url, fileHandle, options) {
+        const cleanUrl = normalizeUrl(url);
+        let downloadUrl = cleanUrl;
+        try {
+            if (new URL(cleanUrl).hostname.includes('image.civitai.com')) {
+                const resp = await fetch(cleanUrl, { mode: 'no-cors', credentials: 'include', redirect: 'follow' });
+                const redirectedUrl = resp?.url ? String(resp.url) : '';
+                if (/^https?:\/\//i.test(redirectedUrl)) {
+                    downloadUrl = normalizeUrl(redirectedUrl);
+                }
+            }
+        } catch (_) {
+        }
+        const chunkSize = options?.chunkSize ?? (4 * 1024 * 1024);
+        const maxRetriesPerChunk = options?.maxRetriesPerChunk ?? 3;
+        const baseDelayMs = options?.baseDelayMs ?? 600;
+        const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null;
+
+        const writable = await fileHandle.createWritable();
+        try {
+            let totalSize = null;
+            let offset = 0;
+
+            let probeResp;
+            try {
+                probeResp = await gmRequestArrayBuffer(downloadUrl, { Range: "bytes=0-0" }, 30000);
+            } catch (_) {
+                probeResp = null;
+            }
+
+            if (probeResp && (probeResp.status === 206 || probeResp.status === 200)) {
+                const contentRange = parseHeaderValue(probeResp.responseHeaders, 'content-range');
+                if (contentRange) {
+                    const m = contentRange.match(/\/(\d+)\s*$/);
+                    if (m) totalSize = Number(m[1]);
+                }
+                if (!Number.isFinite(totalSize) || totalSize <= 0) {
+                    const contentLength = parseHeaderValue(probeResp.responseHeaders, 'content-length');
+                    if (contentLength) {
+                        const n = Number(contentLength);
+                        if (Number.isFinite(n) && n > 0 && probeResp.status === 200) {
+                            totalSize = n;
+                        }
+                    }
+                }
+
+                if (probeResp.status === 200) {
+                    await writable.write(new Uint8Array(probeResp.response));
+                    if (onProgress) {
+                        onProgress({ loadedBytes: probeResp.response.byteLength, totalBytes: probeResp.response.byteLength, percent: 100 });
+                    }
+                    return;
+                }
+            }
+
+            while (totalSize === null || offset < totalSize) {
+                const end = totalSize === null ? (offset + chunkSize - 1) : Math.min(offset + chunkSize - 1, totalSize - 1);
+                const rangeValue = `bytes=${offset}-${end}`;
+
+                let lastError = null;
+                for (let attempt = 1; attempt <= maxRetriesPerChunk; attempt++) {
+                    try {
+                        const resp = await gmRequestArrayBuffer(downloadUrl, { Range: rangeValue }, 0);
+                        if (resp.status === 206) {
+                            await writable.write(new Uint8Array(resp.response));
+                            offset += resp.response.byteLength;
+                            if (totalSize === null) {
+                                const contentRange = parseHeaderValue(resp.responseHeaders, 'content-range');
+                                const m = contentRange.match(/\/(\d+)\s*$/);
+                                if (m) totalSize = Number(m[1]);
+                            }
+                            if (onProgress) {
+                                const percent = totalSize ? Math.min(100, Math.floor((offset / totalSize) * 100)) : 0;
+                                onProgress({ loadedBytes: offset, totalBytes: totalSize, percent });
+                            }
+                            lastError = null;
+                            break;
+                        }
+                        if (resp.status === 200 && offset === 0) {
+                            await writable.write(new Uint8Array(resp.response));
+                            if (onProgress) {
+                                onProgress({ loadedBytes: resp.response.byteLength, totalBytes: resp.response.byteLength, percent: 100 });
+                            }
+                            return;
+                        }
+                        throw new Error(`unexpected status ${resp.status} for range ${rangeValue}`);
+                    } catch (e) {
+                        lastError = e;
+                        if (attempt < maxRetriesPerChunk) {
+                            await new Promise(r => setTimeout(r, baseDelayMs * attempt));
+                        }
+                    }
+                }
+
+                if (lastError) {
+                    throw lastError;
+                }
+
+                if (totalSize !== null && offset >= totalSize) {
+                    break;
+                }
+                if (totalSize === null && offset === 0) {
+                    throw new Error('range download failed');
+                }
+            }
+        } finally {
+            await writable.close();
+        }
+    }
+
+    function gmFetch(url) {
+        let cleanUrl;
+        try {
+            cleanUrl = normalizeUrl(url);
+        } catch (e) {
+            return Promise.reject(e);
+        }
+        const isVideo = /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(cleanUrl);
+        const timeoutMs = isVideo ? 0 : 30000;
+
+        const requestOnce = (targetUrl) => new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: "GET",
+                url: targetUrl,
+                headers: {
+                    Referer: window.location.href,
+                    Origin: window.location.origin,
+                    Accept: "*/*"
+                },
+                responseType: "arraybuffer",
+                timeout: timeoutMs,
                 onload: (response) => {
                     if (response.status >= 200 && response.status < 300) {
+                        const contentTypeMatch = String(response.responseHeaders || '').match(/^\s*content-type:\s*([^\r\n;]+)/im);
+                        const contentType = contentTypeMatch?.[1]?.trim() || 'application/octet-stream';
                         resolve({
                             ok: true,
-                            blob: () => Promise.resolve(response.response)
+                            blob: () => Promise.resolve(new Blob([response.response], { type: contentType }))
                         });
                     } else {
                         reject(new Error(`HTTP error! status: ${response.status}`));
                     }
                 },
                 onerror: (error) => {
-                    reject(error);
+                    reject(new Error(`GM_xmlhttpRequest failed for ${targetUrl}: ${JSON.stringify(error)}`));
+                },
+                ontimeout: () => {
+                    reject(new Error(`GM_xmlhttpRequest timeout for ${targetUrl}`));
                 }
             });
+        });
+
+        const resolveRedirectedUrl = async () => {
+            const resp = await fetch(cleanUrl, { mode: 'no-cors', credentials: 'include', redirect: 'follow' });
+            const redirectedUrl = resp?.url ? String(resp.url) : '';
+            if (!/^https?:\/\//i.test(redirectedUrl)) {
+                return '';
+            }
+            return redirectedUrl;
+        };
+
+        return requestOnce(cleanUrl).catch(async (err) => {
+            if (!isVideo) {
+                throw err;
+            }
+            await new Promise(r => setTimeout(r, 800));
+            try {
+                const redirectedUrl = await resolveRedirectedUrl();
+                if (redirectedUrl && redirectedUrl !== cleanUrl) {
+                    return requestOnce(redirectedUrl);
+                }
+            } catch (_) {
+            }
+            return requestOnce(cleanUrl);
         });
     }
 
@@ -92,10 +482,14 @@
     // ---------------------------------------------------------------
     // 保存liblib封面信息
     // ---------------------------------------------------------------
-    async function saveLibLibAuthImagesInfo() {
+    async function saveLibLibAuthImagesInfo(buttonEl) {
         // 1:CheckPoint 2:embedding；3：HYPERNETWORK ；4：AESTHETIC GRADIENT; 5：Lora；6：LyCORIS;  9:WILDCARDS
         let modelType = 1;
 
+        const buttonProgress = createButtonProgressController(buttonEl);
+        if (buttonProgress) buttonProgress.start();
+
+        try {
         // open directory picker
         const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
 
@@ -212,40 +606,90 @@
                     const promptList = []
                     // 图片信息start
                     const authImages = verItem.imageGroup.images;
-                    let isCover = false;
+                    const modelDirHandle = await dirHandle.getDirectoryHandle(model_name_ver, { create: true });
+
+                    const mediaCandidates = authImages.filter(item => item && item.imageUrl);
+                    const coverItem = mediaCandidates[0] ?? null;
+                    const additionalMediaCandidates = downloadImages
+                        ? mediaCandidates.filter(item => item && item !== coverItem).slice(0, default_download_pic_num)
+                        : [];
+
+                    const totalUnits = (coverItem ? 1 : 0) + additionalMediaCandidates.length + 2;
+                    let completedUnits = 0;
+                    const setOverallProgress = (unitProgress, text) => {
+                        if (!buttonProgress) return;
+                        const p = Math.max(0, Math.min(1, Number(unitProgress) || 0));
+                        const overall = totalUnits > 0 ? ((completedUnits + p) / totalUnits) * 100 : 0;
+                        buttonProgress.setProgress(overall, text || '处理中');
+                    };
+
+                    const downloadOne = async (mediaUrl, ext, fileHandle, unitLabel) => {
+                        if (isVideoExt(ext)) {
+                            await gmDownloadRangeToFile(mediaUrl, fileHandle, {
+                                onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
+                            });
+                            setOverallProgress(1, unitLabel);
+                            return;
+                        }
+                        await gmDownloadToFile(mediaUrl, fileHandle, {
+                            onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
+                        });
+                        setOverallProgress(1, unitLabel);
+                    };
 
                     for (const authImage of authImages) {
-                        const authImageUrl = authImage.imageUrl;
-                        var authimageName = authImage.id;
-                        var authimageExt = authImageUrl.split("/").pop().split(".").pop();
-                        var tmp = authimageExt.indexOf("?");
-                        if (tmp > 0) {
-                            authimageExt = authimageExt.substring(0, tmp);
-                        }
-
-                        const authImageUuid = authImage.uuid;
                         const generateInfo = authImage.generateInfo;
                         if (generateInfo) {
                             if (generateInfo.prompt) {
                                 promptList.push(generateInfo.prompt)
                             }
                         }
+                    }
 
-                        if (!isCover) {
-                            // 下载封面图片
-                            isCover = true;
-                            // 下载图片
-                            const resp_download = await gmFetch(authImageUrl);
-                            const blob = await resp_download.blob();
-                            // 获取文件句柄
-                            const fileName = model_name_ver + "." + authimageExt;
+                    if (coverItem) {
+                        const coverUrl = coverItem.imageUrl;
+                        let coverExt = coverUrl.split("/").pop().split(".").pop();
+                        const tmp = coverExt.indexOf("?");
+                        if (tmp > 0) {
+                            coverExt = coverExt.substring(0, tmp);
+                        }
+                        try {
+                            const unitLabel = `下载 ${completedUnits + 1}/${totalUnits}`;
+                            setOverallProgress(0, unitLabel);
+                            const fileName = model_name_ver + "." + coverExt;
                             const picHandle = await dirHandle.getFileHandle(fileName, { create: true });
-                            // 写入图片
-                            const writable = await picHandle.createWritable();
-                            await writable.write(blob);
-                            await writable.close();
+                            await downloadOne(coverUrl, coverExt, picHandle, unitLabel);
+                            completedUnits += 1;
                             console.log("Image written to file:", fileName);
-                            // break;
+                        } catch (error) {
+                            console.error(`[封面下载失败][liblib] ${coverUrl}`, error);
+                            completedUnits += 1;
+                            setOverallProgress(0, `下载 ${completedUnits}/${totalUnits}`);
+                        }
+                    }
+
+                    if (additionalMediaCandidates.length > 0) {
+                        let i = 0;
+                        for (const item of additionalMediaCandidates) {
+                            i += 1;
+                            const mediaUrl = item.imageUrl;
+                            let mediaExt = mediaUrl.split("/").pop().split(".").pop();
+                            const tmp = mediaExt.indexOf("?");
+                            if (tmp > 0) {
+                                mediaExt = mediaExt.substring(0, tmp);
+                            }
+                            const unitLabel = `下载 ${completedUnits + 1}/${totalUnits}`;
+                            try {
+                                setOverallProgress(0, unitLabel);
+                                const desiredName = buildMediaFilenameFromUrl(mediaUrl, `${model_name_ver}_${Date.now()}_${i}`, mediaExt);
+                                const unique = await getUniqueFileHandle(modelDirHandle, desiredName);
+                                await downloadOne(mediaUrl, mediaExt, unique.handle, unitLabel);
+                                console.log("Image written to file:", unique.name);
+                            } catch (error) {
+                                console.error(`[媒体下载失败][liblib] ${mediaUrl}`, error);
+                            } finally {
+                                completedUnits += 1;
+                            }
                         }
                     }
                     // 图片信息end
@@ -260,11 +704,11 @@
                     modelInfoJson.triggerWord = triggerWord
 
                     // 创建模型目录( 模型+版本名 )
-                    const modelDirHandle = await dirHandle.getDirectoryHandle(model_name_ver, { create: true });
                     // 获取文件句柄
                     const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".txt", { create: true });
                     // 写入模型信息json文件
                     const writablejson = await savejsonHandle.createWritable();
+                    setOverallProgress(0, `写入 ${completedUnits + 1}/${totalUnits}`);
                     // 将 modelInfoJson 的每个字段转成单独一行文本
                     const lines = [];
                     for (const [key, value] of Object.entries(modelInfoJson)) {
@@ -273,28 +717,36 @@
                     const modelInfoText = lines.join('\n');
                     await writablejson.write(modelInfoText);
                     await writablejson.close();
+                    completedUnits += 1;
+                    setOverallProgress(1, `写入 ${completedUnits}/${totalUnits}`);
 
                     // 创建模型版本目录
                     // const modelVerDirHandle = await modelDirHandle.getDirectoryHandle(modelName, {create: true});
                     // 获取文件句柄
                     const saveExampleHandle = await modelDirHandle.getFileHandle("example.txt", { create: true });
                     const writableExample = await saveExampleHandle.createWritable();
+                    setOverallProgress(0, `写入 ${completedUnits + 1}/${totalUnits}`);
                     await writableExample.write(triggerWord + '\n\n');
                     // 写入字符串数组
                     for (const str of promptList) {
                         await writableExample.write(str + '\n\n');
                     }
                     await writableExample.close();
+                    completedUnits += 1;
+                    setOverallProgress(1, `写入 ${completedUnits}/${totalUnits}`);
                 }
             }
         }
         alert("封面信息下载完成");
+        } finally {
+            if (buttonProgress) buttonProgress.resetAfter(800);
+        }
     }
 
     // ---------------------------------------------------------------
     // 保存封面信息
     // ---------------------------------------------------------------
-    async function saveCivitaiModelInfo() {
+    async function saveCivitaiModelInfo(buttonEl) {
         // 模型id
         let modelId = 0;
         // 模型版本id
@@ -308,6 +760,10 @@
         // 样图提示词举例
         let example = []
 
+        const buttonProgress = createButtonProgressController(buttonEl);
+        if (buttonProgress) buttonProgress.start();
+
+        try {
         // open directory picker
         const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
 
@@ -483,31 +939,96 @@
                         }
                     }
 
-                    // 封面图片
-                    let isCover = false;
-                    for (const authImage of authImages) {
-                        const authImageUrl = authImage.url;
-                        let authimageExt = authImageUrl.split("/").pop().split(".").pop();
-                        const tmp = authimageExt.indexOf("?");
-                        if (tmp > 0) {
-                            authimageExt = authimageExt.substring(0, tmp);
+                    // 统一写入子文件夹：model_name_ver
+                    const modelDirHandle = await dirHandle.getDirectoryHandle(model_name_ver, { create: true });
+
+                    // mediaCandidates：该版本下的媒体（图片/视频）
+                    const mediaCandidates = authImages.filter(item => item && item.url);
+
+                    // 选择封面：由 coverSaveMode 控制，但始终保证“至少选到一个可用媒体”作为兜底
+                    const coverImageCandidates = mediaCandidates.filter(item => item.type === 'image');
+                    const coverVideoCandidate = mediaCandidates.find(item => item.type === 'video') ?? null;
+                    const coverImageCandidate = coverImageCandidates[0] ?? null;
+                    const coverItem = coverSaveMode === 'video'
+                        ? (coverVideoCandidate ?? coverImageCandidate ?? (mediaCandidates[0] ?? null))
+                        : (coverImageCandidate ?? (mediaCandidates[0] ?? null));
+
+                    // 是否下载子文件夹内的图片：downloadImages 仅控制 additionalMediaCandidates，不影响封面下载
+                    const additionalMediaCandidates = downloadImages
+                        ? mediaCandidates.filter(item => item && item.type === 'image' && item !== coverItem).slice(0, default_download_pic_num)
+                        : [];
+
+                    // 总进度单位：封面（1）+ 子文件夹内图片（N）+ 两个文本文件（2）
+                    const totalUnits = (coverItem ? 1 : 0) + additionalMediaCandidates.length + 2;
+                    let completedUnits = 0;
+                    const setOverallProgress = (unitProgress, text) => {
+                        if (!buttonProgress) return;
+                        const p = Math.max(0, Math.min(1, Number(unitProgress) || 0));
+                        const overall = totalUnits > 0 ? ((completedUnits + p) / totalUnits) * 100 : 0;
+                        buttonProgress.setProgress(overall, text || '处理中');
+                    };
+
+                    // 单个文件下载：图片走单次下载（支持 onprogress）；视频走 Range 分片下载（更稳）
+                    const downloadOne = async (mediaUrl, ext, fileHandle, unitLabel) => {
+                        if (isVideoExt(ext)) {
+                            await gmDownloadRangeToFile(mediaUrl, fileHandle, {
+                                onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
+                            });
+                            setOverallProgress(1, unitLabel);
+                            return;
                         }
-                        if (!isCover) {
-                            // console.log(authImageUrl)
-                            // 下载封面图片
-                            isCover = true;
-                            // 下载图片
-                            const resp_download = await gmFetch(authImageUrl);
-                            const blob = await resp_download.blob();
-                            // 获取文件句柄
-                            const fileName = model_name_ver + "." + authimageExt;
+                        await gmDownloadToFile(mediaUrl, fileHandle, {
+                            onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
+                        });
+                        setOverallProgress(1, unitLabel);
+                    };
+
+                    // 封面选择策略由全局变量 coverSaveMode 控制
+                    if (coverItem) {
+                        const coverUrl = coverItem.url;
+                        let coverExt = coverUrl.split("/").pop().split(".").pop();
+                        const tmp = coverExt.indexOf("?");
+                        if (tmp > 0) {
+                            coverExt = coverExt.substring(0, tmp);
+                        }
+                        try {
+                            const unitLabel = `下载 ${completedUnits + 1}/${totalUnits}`;
+                            setOverallProgress(0, unitLabel);
+                            const fileName = model_name_ver + "." + coverExt;
                             const picHandle = await dirHandle.getFileHandle(fileName, { create: true });
-                            // 写入图片
-                            const writable = await picHandle.createWritable();
-                            await writable.write(blob);
-                            await writable.close();
+                            await downloadOne(coverUrl, coverExt, picHandle, unitLabel);
+                            completedUnits += 1;
                             console.log("Image written to file:", fileName);
-                            // break;
+                        } catch (error) {
+                            console.error(`[封面下载失败][civitai] ${coverUrl}`, error);
+                            completedUnits += 1;
+                            setOverallProgress(0, `下载 ${completedUnits}/${totalUnits}`);
+                        }
+                    }
+
+                    if (additionalMediaCandidates.length > 0) {
+                        let i = 0;
+                        for (const item of additionalMediaCandidates) {
+                            i += 1;
+                            const mediaUrl = item.url;
+                            let mediaExt = mediaUrl.split("/").pop().split(".").pop();
+                            const tmp = mediaExt.indexOf("?");
+                            if (tmp > 0) {
+                                mediaExt = mediaExt.substring(0, tmp);
+                            }
+                            const unitLabel = `下载 ${completedUnits + 1}/${totalUnits}`;
+                            try {
+                                setOverallProgress(0, unitLabel);
+                                // 子文件夹内媒体文件：优先用 URL 文件名，重名自动追加 _1/_2；取不到时兜底“目录名+时间戳”
+                                const desiredName = buildMediaFilenameFromUrl(mediaUrl, `${model_name_ver}_${Date.now()}_${i}`, mediaExt);
+                                const unique = await getUniqueFileHandle(modelDirHandle, desiredName);
+                                await downloadOne(mediaUrl, mediaExt, unique.handle, unitLabel);
+                                console.log("Image written to file:", unique.name);
+                            } catch (error) {
+                                console.error(`[媒体下载失败][civitai] ${mediaUrl}`, error);
+                            } finally {
+                                completedUnits += 1;
+                            }
                         }
                     }
 
@@ -520,24 +1041,28 @@
                     modelInfoJson.triggerWord = triggerWord
                     // console.log(JSON.stringify(modelInfoJson, null, 4));
 
-                    // 创建模型目录( 模型+版本名 )
-                    const modelDirHandle = await dirHandle.getDirectoryHandle(model_name_ver, { create: true });
                     // 获取文件句柄
                     const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".txt", { create: true });
                     // 写入模型信息json文件
                     const writablejson = await savejsonHandle.createWritable();
+                    setOverallProgress(0, `写入 ${completedUnits + 1}/${totalUnits}`);
                     await writablejson.write(flattenObjectToPlainTextWithHtmlHandling(modelInfoJson));
                     await writablejson.close();
+                    completedUnits += 1;
+                    setOverallProgress(1, `写入 ${completedUnits}/${totalUnits}`);
 
                     // 获取文件句柄
                     const saveExampleHandle = await modelDirHandle.getFileHandle("example.txt", { create: true });
                     const writableExample = await saveExampleHandle.createWritable();
+                    setOverallProgress(0, `写入 ${completedUnits + 1}/${totalUnits}`);
                     await writableExample.write(triggerWord + '\n\n');
                     // 写入字符串数组
                     for (const str of promptList) {
                         await writableExample.write(JSON.stringify(str, null, 4) + '\n\n');
                     }
                     await writableExample.close();
+                    completedUnits += 1;
+                    setOverallProgress(1, `写入 ${completedUnits}/${totalUnits}`);
 
                 } // 匹配版本end
             } // 循环versions
@@ -547,6 +1072,9 @@
 
         } else {
             alert("未找到模型ID信息");
+        }
+        } finally {
+            if (buttonProgress) buttonProgress.resetAfter(800);
         }
     }
 
@@ -845,12 +1373,77 @@
         // 定义元素------------------------------------
         const div1 = document.createElement('div');
         div1.style.display = 'flex';
+        div1.style.flexDirection = 'column';
         div1.style.justifyContent = "space-between";
-        div1.style.alignItems = "center";
+        div1.style.alignItems = "stretch";
+        div1.style.gap = "6px";
+        const brandBlue = '#1E88E5';
+
+        // 统一生成 radio：用于控制“封面选图/选视频”和“是否下载子文件夹内图片”
+        const createRadio = (groupName, value, labelText, checked, onChange) => {
+            const label = document.createElement('label');
+            label.style.display = 'inline-flex';
+            label.style.alignItems = 'center';
+            label.style.gap = '6px';
+            label.style.color = brandBlue;
+            const input = document.createElement('input');
+            input.type = 'radio';
+            input.name = groupName;
+            input.value = value;
+            input.checked = !!checked;
+            input.style.accentColor = brandBlue;
+            input.addEventListener('change', () => {
+                if (input.checked) onChange(value);
+            });
+            const text = document.createElement('span');
+            text.textContent = labelText;
+            text.style.color = brandBlue;
+            label.appendChild(input);
+            label.appendChild(text);
+            return label;
+        };
+
+        const createControls = (siteKey) => {
+            const controls = document.createElement('div');
+            controls.style.display = 'flex';
+            controls.style.flexWrap = 'wrap';
+            controls.style.gap = '12px';
+            controls.style.alignItems = 'center';
+
+            // 封面单选：影响封面文件取用策略（封面始终会下载）
+            const coverGroup = document.createElement('div');
+            coverGroup.style.display = 'inline-flex';
+            coverGroup.style.gap = '8px';
+            coverGroup.style.alignItems = 'center';
+            const coverTitle = document.createElement('span');
+            coverTitle.textContent = '封面：';
+            coverTitle.style.color = brandBlue;
+            coverGroup.appendChild(coverTitle);
+            coverGroup.appendChild(createRadio(`${siteKey}_cover_mode`, 'image', '图片封面', coverSaveMode === 'image', (v) => { coverSaveMode = v; }));
+            coverGroup.appendChild(createRadio(`${siteKey}_cover_mode`, 'video', '视频封面', coverSaveMode === 'video', (v) => { coverSaveMode = v; }));
+
+            // 下载图片单选：仅控制 model_name_ver 子文件夹内的图片下载；不影响封面、不影响文本文件写入
+            const dlGroup = document.createElement('div');
+            dlGroup.style.display = 'inline-flex';
+            dlGroup.style.gap = '8px';
+            dlGroup.style.alignItems = 'center';
+            const dlTitle = document.createElement('span');
+            dlTitle.textContent = '下载图片：';
+            dlTitle.style.color = brandBlue;
+            dlGroup.appendChild(dlTitle);
+            dlGroup.appendChild(createRadio(`${siteKey}_dl_images`, 'yes', '是', downloadImages === true, () => { downloadImages = true; }));
+            dlGroup.appendChild(createRadio(`${siteKey}_dl_images`, 'no', '否', downloadImages === false, () => { downloadImages = false; }));
+
+            controls.appendChild(coverGroup);
+            controls.appendChild(dlGroup);
+            return controls;
+        };
+
         if (site === 'liblib') {
+            div1.appendChild(createControls('liblib'));
             const button1 = document.createElement('button');
             button1.textContent = '下载封面+生成信息';
-            button1.onclick = saveLibLibAuthImagesInfo;
+            button1.onclick = () => saveLibLibAuthImagesInfo(button1);
             button1.style.padding = '15px';
             button1.style.width = "200px";
             button1.style.backgroundColor = 'red';
@@ -860,9 +1453,10 @@
             button1.style.borderRadius = '8px'; // 设置圆角半径
             div1.appendChild(button1);
         } else if (site === 'civitai') {
+            div1.appendChild(createControls('civitai'));
             const button2 = document.createElement('button');
             button2.textContent = '下载封面+生成信息';
-            button2.onclick = saveCivitaiModelInfo;
+            button2.onclick = () => saveCivitaiModelInfo(button2);
             button2.style.padding = '15px';
             button2.style.width = "100%";
             button2.style.setProperty('background-color', 'blue', 'important'); // 使用 setProperty
