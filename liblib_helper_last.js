@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      2.0.2
+// @version      2.0.3
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
