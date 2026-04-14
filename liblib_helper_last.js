@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      2.0.0
+// @version      2.0.1
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -682,9 +682,9 @@
                             try {
                                 setOverallProgress(0, unitLabel);
                                 const desiredName = buildMediaFilenameFromUrl(mediaUrl, `${model_name_ver}_${Date.now()}_${i}`, mediaExt);
-                                const unique = await getUniqueFileHandle(modelDirHandle, desiredName);
-                                await downloadOne(mediaUrl, mediaExt, unique.handle, unitLabel);
-                                console.log("Image written to file:", unique.name);
+                                const fileHandle = await modelDirHandle.getFileHandle(desiredName, { create: true });
+                                await downloadOne(mediaUrl, mediaExt, fileHandle, unitLabel);
+                                console.log("Image written to file:", desiredName);
                             } catch (error) {
                                 console.error(`[媒体下载失败][liblib] ${mediaUrl}`, error);
                             } finally {
@@ -1019,11 +1019,11 @@
                             const unitLabel = `下载 ${completedUnits + 1}/${totalUnits}`;
                             try {
                                 setOverallProgress(0, unitLabel);
-                                // 子文件夹内媒体文件：优先用 URL 文件名，重名自动追加 _1/_2；取不到时兜底“目录名+时间戳”
+                                // 子文件夹内媒体文件：优先用 URL 文件名，重复则覆盖；取不到时兜底“目录名+时间戳”
                                 const desiredName = buildMediaFilenameFromUrl(mediaUrl, `${model_name_ver}_${Date.now()}_${i}`, mediaExt);
-                                const unique = await getUniqueFileHandle(modelDirHandle, desiredName);
-                                await downloadOne(mediaUrl, mediaExt, unique.handle, unitLabel);
-                                console.log("Image written to file:", unique.name);
+                                const fileHandle = await modelDirHandle.getFileHandle(desiredName, { create: true });
+                                await downloadOne(mediaUrl, mediaExt, fileHandle, unitLabel);
+                                console.log("Image written to file:", desiredName);
                             } catch (error) {
                                 console.error(`[媒体下载失败][civitai] ${mediaUrl}`, error);
                             } finally {
