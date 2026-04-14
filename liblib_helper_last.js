@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      2.0.1
+// @version      2.0.2
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -191,11 +191,11 @@
 
     // 发起二进制请求的底层封装（返回 ArrayBuffer），可附带自定义 headers（如 Range）
     function gmRequestArrayBuffer(targetUrl, extraHeaders, timeoutMs) {
-        const headers = Object.assign({
+        const baseHeaders = {
             Referer: window.location.href,
-            Origin: window.location.origin,
             Accept: "*/*"
-        }, extraHeaders || {});
+        };
+        const headers = Object.assign(baseHeaders, extraHeaders || {});
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: "GET",
@@ -203,10 +203,11 @@
                 headers,
                 responseType: "arraybuffer",
                 timeout: timeoutMs,
+                withCredentials: true,
                 anonymous: false,
                 onload: (response) => resolve(response),
-                onerror: (error) => reject(error),
-                ontimeout: () => reject(new Error('timeout'))
+                onerror: (error) => reject(new Error(`GM_xmlhttpRequest failed for ${targetUrl}: ${JSON.stringify(error)}`)),
+                ontimeout: () => reject(new Error(`GM_xmlhttpRequest timeout for ${targetUrl}`))
             });
         });
     }
@@ -230,21 +231,24 @@
         const onProgress = typeof options?.onProgress === 'function' ? options.onProgress : null;
         const timeoutMs = typeof options?.timeoutMs === 'number' ? options.timeoutMs : 30000;
 
-        const headers = Object.assign({
+        const headersWithReferer = Object.assign({
             Referer: window.location.href,
-            Origin: window.location.origin,
+            Accept: "*/*"
+        }, options?.headers || {});
+        const headersMinimal = Object.assign({
             Accept: "*/*"
         }, options?.headers || {});
 
         const writable = await fileHandle.createWritable();
         try {
-            const resp = await new Promise((resolve, reject) => {
+            const requestOnce = (targetUrl, headers) => new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
                     method: "GET",
-                    url: downloadUrl,
+                    url: targetUrl,
                     headers,
                     responseType: "arraybuffer",
                     timeout: timeoutMs,
+                    withCredentials: true,
                     anonymous: false,
                     onprogress: (e) => {
                         if (!onProgress) return;
@@ -254,10 +258,21 @@
                         onProgress({ loadedBytes, totalBytes, percent });
                     },
                     onload: (response) => resolve(response),
-                    onerror: (error) => reject(error),
-                    ontimeout: () => reject(new Error('timeout'))
+                    onerror: (error) => reject(new Error(`GM_xmlhttpRequest failed for ${targetUrl}: ${JSON.stringify(error)}`)),
+                    ontimeout: () => reject(new Error(`GM_xmlhttpRequest timeout for ${targetUrl}`))
                 });
             });
+
+            let resp;
+            try {
+                resp = await requestOnce(downloadUrl, headersWithReferer);
+            } catch (e1) {
+                try {
+                    resp = await requestOnce(downloadUrl, headersMinimal);
+                } catch (_) {
+                    throw e1;
+                }
+            }
 
             if (resp.status < 200 || resp.status >= 300) {
                 throw new Error(`HTTP error! status: ${resp.status}`);
@@ -631,9 +646,17 @@
                             setOverallProgress(1, unitLabel);
                             return;
                         }
-                        await gmDownloadToFile(mediaUrl, fileHandle, {
-                            onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
-                        });
+                        try {
+                            await gmDownloadToFile(mediaUrl, fileHandle, {
+                                onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
+                            });
+                        } catch (_) {
+                            await gmDownloadRangeToFile(mediaUrl, fileHandle, {
+                                chunkSize: 1024 * 1024,
+                                maxRetriesPerChunk: 5,
+                                onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
+                            });
+                        }
                         setOverallProgress(1, unitLabel);
                     };
 
@@ -977,9 +1000,17 @@
                             setOverallProgress(1, unitLabel);
                             return;
                         }
-                        await gmDownloadToFile(mediaUrl, fileHandle, {
-                            onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
-                        });
+                        try {
+                            await gmDownloadToFile(mediaUrl, fileHandle, {
+                                onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
+                            });
+                        } catch (_) {
+                            await gmDownloadRangeToFile(mediaUrl, fileHandle, {
+                                chunkSize: 1024 * 1024,
+                                maxRetriesPerChunk: 5,
+                                onProgress: (p) => setOverallProgress((Number(p?.percent) || 0) / 100, unitLabel)
+                            });
+                        }
                         setOverallProgress(1, unitLabel);
                     };
 
