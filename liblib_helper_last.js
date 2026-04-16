@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      2.0.3
+// @version      2.0.4
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
 // @match        https://www.liblib.art/modelinfo/*
 // @match        https://civitai.com/models/*
+// @match        https://civitai.red/models/*
 // @grant        GM_xmlhttpRequest
 // @connect      *
 // @license      MIT License
@@ -42,6 +43,10 @@
         } else {
             return 'unknown';
         }
+    };
+
+    const civitaiBaseUrl = () => {
+        return window.location.hostname.includes('civitai.red') ? 'https://civitai.red' : 'https://civitai.com';
     };
 
     // ---------------------------------------------------------------
@@ -218,7 +223,7 @@
         const cleanUrl = normalizeUrl(url);
         let downloadUrl = cleanUrl;
         try {
-            if (new URL(cleanUrl).hostname.includes('image.civitai.com')) {
+            if (new URL(cleanUrl).hostname.includes('image.civitai.com') || new URL(cleanUrl).hostname.includes('civitai.red')) {
                 const resp = await fetch(cleanUrl, { mode: 'no-cors', credentials: 'include', redirect: 'follow' });
                 const redirectedUrl = resp?.url ? String(resp.url) : '';
                 if (/^https?:\/\//i.test(redirectedUrl)) {
@@ -295,7 +300,7 @@
         const cleanUrl = normalizeUrl(url);
         let downloadUrl = cleanUrl;
         try {
-            if (new URL(cleanUrl).hostname.includes('image.civitai.com')) {
+            if (new URL(cleanUrl).hostname.includes('image.civitai.com') || new URL(cleanUrl).hostname.includes('civitai.red')) {
                 const resp = await fetch(cleanUrl, { mode: 'no-cors', credentials: 'include', redirect: 'follow' });
                 const redirectedUrl = resp?.url ? String(resp.url) : '';
                 if (/^https?:\/\//i.test(redirectedUrl)) {
@@ -800,7 +805,7 @@
             modelVersionId = value2;
 
             // 接口url
-            const url_model = "https://civitai.com/api/v1/models/" + modelId;
+            const url_model = civitaiBaseUrl() + "/api/v1/models/" + modelId;
 
             // 获取模型介绍文本
             textDesc = extractCivitaiTextFromSecondSpoiler();
@@ -1260,7 +1265,7 @@
             for (const imageId of imageIds) {
                 const inputObject = { json: { id: parseInt(imageId, 10), authed: true } }; // 确保 imageId 是数字
                 const encodedImageId = encodeURIComponent(JSON.stringify(inputObject));
-                const url = `https://civitai.com/api/trpc/image.getGenerationData?input=${encodedImageId}`;
+                const url = `${civitaiBaseUrl()}/api/trpc/image.getGenerationData?input=${encodedImageId}`;
 
                 try {
                     console.log('request image info url ');
