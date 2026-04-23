@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      2.0.4
+// @version      3.0.1
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -18,13 +18,9 @@
 (function () {
     'use strict';
 
-    // 定义全局变量
-    // var modelDir;
+    // 仅保留 liblib 流程仍在复用的少量全局状态，避免在多个辅助函数间层层传参。
     var model_name_ver;
-    var textDesc, uuid, buildId, webid, modelId, modelName, modelVersionId, downloadUrl;
-    var page = 1;
-    var pageSize = 16;
-    var sortType = 0;
+    var textDesc, uuid, buildId, webid, modelId, modelName, modelVersionId;
     const default_download_pic_num = 100;
     // 封面选择模式：
     // - image：封面优先选图片；若无图片则兜底选第一个媒体
@@ -102,28 +98,6 @@
         const ext = sanitizeFilename(fallbackExt || '');
         const ts = Date.now();
         return ext ? `${base}_${ts}.${ext}` : `${base}_${ts}`;
-    }
-
-    // 获取不重名的文件句柄：若文件名已存在则自动追加 _1/_2…，避免覆盖
-    async function getUniqueFileHandle(dirHandle, desiredFilename) {
-        const safeDesired = sanitizeFilename(desiredFilename);
-        const split = splitFilename(safeDesired);
-        const base = split.name || 'file';
-        const ext = split.extension ? `.${split.extension}` : '';
-
-        for (let i = 0; i < 200; i++) {
-            const name = i === 0 ? `${base}${ext}` : `${base}_${i}${ext}`;
-            try {
-                await dirHandle.getFileHandle(name);
-            } catch (_) {
-                const handle = await dirHandle.getFileHandle(name, { create: true });
-                return { handle, name };
-            }
-        }
-
-        const fallback = `${base}_${Date.now()}${ext}`;
-        const handle = await dirHandle.getFileHandle(fallback, { create: true });
-        return { handle, name: fallback };
     }
 
     // 从 GM_xmlhttpRequest 的 responseHeaders 文本中提取指定 header（不区分大小写）
@@ -406,84 +380,6 @@
         }
     }
 
-    function gmFetch(url) {
-        let cleanUrl;
-        try {
-            cleanUrl = normalizeUrl(url);
-        } catch (e) {
-            return Promise.reject(e);
-        }
-        const isVideo = /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(cleanUrl);
-        const timeoutMs = isVideo ? 0 : 30000;
-
-        const requestOnce = (targetUrl) => new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: "GET",
-                url: targetUrl,
-                headers: {
-                    Referer: window.location.href,
-                    Origin: window.location.origin,
-                    Accept: "*/*"
-                },
-                responseType: "arraybuffer",
-                timeout: timeoutMs,
-                onload: (response) => {
-                    if (response.status >= 200 && response.status < 300) {
-                        const contentTypeMatch = String(response.responseHeaders || '').match(/^\s*content-type:\s*([^\r\n;]+)/im);
-                        const contentType = contentTypeMatch?.[1]?.trim() || 'application/octet-stream';
-                        resolve({
-                            ok: true,
-                            blob: () => Promise.resolve(new Blob([response.response], { type: contentType }))
-                        });
-                    } else {
-                        reject(new Error(`HTTP error! status: ${response.status}`));
-                    }
-                },
-                onerror: (error) => {
-                    reject(new Error(`GM_xmlhttpRequest failed for ${targetUrl}: ${JSON.stringify(error)}`));
-                },
-                ontimeout: () => {
-                    reject(new Error(`GM_xmlhttpRequest timeout for ${targetUrl}`));
-                }
-            });
-        });
-
-        const resolveRedirectedUrl = async () => {
-            const resp = await fetch(cleanUrl, { mode: 'no-cors', credentials: 'include', redirect: 'follow' });
-            const redirectedUrl = resp?.url ? String(resp.url) : '';
-            if (!/^https?:\/\//i.test(redirectedUrl)) {
-                return '';
-            }
-            return redirectedUrl;
-        };
-
-        return requestOnce(cleanUrl).catch(async (err) => {
-            if (!isVideo) {
-                throw err;
-            }
-            await new Promise(r => setTimeout(r, 800));
-            try {
-                const redirectedUrl = await resolveRedirectedUrl();
-                if (redirectedUrl && redirectedUrl !== cleanUrl) {
-                    return requestOnce(redirectedUrl);
-                }
-            } catch (_) {
-            }
-            return requestOnce(cleanUrl);
-        });
-    }
-
-    // ---------------------------------------------------------------
-    // demo
-    // ---------------------------------------------------------------
-    async function createDirectory() {
-        // open directory picker
-        const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
-        // create a new directory named 'newDir'
-        const newDirHandle = await dirHandle.getDirectoryHandle('newDir', { create: true });
-        console.log(newDirHandle);
-    }
-
     // ---------------------------------------------------------------
     // html转文本
     // ---------------------------------------------------------------
@@ -502,6 +398,11 @@
     // ---------------------------------------------------------------
     // 保存liblib封面信息
     // ---------------------------------------------------------------
+    // liblib 页面导出入口：
+    // 1. 读取当前激活版本和页面简介
+    // 2. 请求模型接口
+    // 3. 下载封面 / 附加图片
+    // 4. 写入模型说明与示例 prompt
     async function saveLibLibAuthImagesInfo(buttonEl) {
         // 1:CheckPoint 2:embedding；3：HYPERNETWORK ；4：AESTHETIC GRADIENT; 5：Lora；6：LyCORIS;  9:WILDCARDS
         let modelType = 1;
@@ -530,7 +431,6 @@
             }
         });
         if (textDesc) {
-            // Get the content of the script element
             const scriptContent = document.getElementById('__NEXT_DATA__').textContent;
             const scriptJson = JSON.parse(scriptContent);
 
@@ -541,10 +441,8 @@
             //------------
             // 预请求地址
             const url_acceptor = "https://www.liblib.art/api/www/log/acceptor/f?timestamp=" + Date.now();
-            // var url_acceptor = "https://liblib-api.vibrou.com/api/www/log/acceptor/f?timestamp="+Date.now();
             // 模型信息地址
             const url_model = "https://www.liblib.art/api/www/model/getByUuid/" + uuid + "?timestamp=" + Date.now();
-            // var url_model = "https://liblib-api.vibrou.com/api/www/model/getByUuid/" + uuid;
 
 
             // 发送预请求-------------------------------------------------------
@@ -566,9 +464,6 @@
             })
 
             const model_data = await resp.json();
-            // console.log("----------模型信息-----------");
-            // console.log(model_data);
-
             if (model_data.code !== 0) {
                 return;
             }
@@ -606,8 +501,6 @@
                     modelTypeName = 'WILDCARDS'
                     break;
             }
-
-            // console.log(modelDir+"/"+modelName);
 
             const versions = model_data.data.versions;
             for (const verItem of versions) {
@@ -748,8 +641,6 @@
                     completedUnits += 1;
                     setOverallProgress(1, `写入 ${completedUnits}/${totalUnits}`);
 
-                    // 创建模型版本目录
-                    // const modelVerDirHandle = await modelDirHandle.getDirectoryHandle(modelName, {create: true});
                     // 获取文件句柄
                     const saveExampleHandle = await modelDirHandle.getFileHandle("example.txt", { create: true });
                     const writableExample = await saveExampleHandle.createWritable();
@@ -774,6 +665,11 @@
     // ---------------------------------------------------------------
     // 保存封面信息
     // ---------------------------------------------------------------
+    // Civitai 页面导出入口：
+    // 1. 先从当前页面识别 modelId / modelVersionId
+    // 2. 再请求模型接口拿到完整版本数据
+    // 3. 同时结合页面右侧当前展示文案，补足接口里缺失的“关于此版本”
+    // 4. 下载封面、附加图片，并导出说明与示例 prompt
     async function saveCivitaiModelInfo(buttonEl) {
         // 模型id
         let modelId = 0;
@@ -796,21 +692,15 @@
         const dirHandle = await window.showDirectoryPicker({ mode: "readwrite" });
 
 
-        // 获取模型id和模型版本id
-        const codeElements = document.querySelectorAll('.mantine-Code-root');
-        if (codeElements.length >= 4) {
-            const value1 = codeElements[1].textContent;
-            const value2 = codeElements[3].textContent;
-            modelId = value1;
-            modelVersionId = value2;
+        // modelId 以 URL 为准；modelVersionId 优先取当前页面展示版本，再由接口结果兜底
+        const idsFromPage = getCivitaiIdsFromPage();
+        if (idsFromPage.modelId) {
+            modelId = idsFromPage.modelId;
+            modelVersionId = idsFromPage.modelVersionId || '';
 
             // 接口url
             const url_model = civitaiBaseUrl() + "/api/v1/models/" + modelId;
 
-            // 获取模型介绍文本
-            textDesc = extractCivitaiTextFromSecondSpoiler();
-            // console.log(textDesc)
-            // console.log('request model info url');
             // 发送模型信息
             const resp = await fetch(url_model, {
                 method: 'POST',
@@ -838,10 +728,6 @@
                 // alert(`数据为空`);
                 return;
             }
-            // console.log("----------模型信息-----------");
-            // console.log(JSON.stringify(model_data, null, 4));
-            // console.log(JSON.stringify(model_data));
-
             modelName = model_data.name.replace(/[/\\?%*:|"<>~]/g, '-');
 
             let modelType = model_data.modelType // 1:CheckPoint 2:embedding；3：HYPERNETWORK ；4：AESTHETIC GRADIENT; 5：Lora；6：LyCORIS;  9:WILDCARDS
@@ -877,6 +763,20 @@
             // 模型版本数组
             let versions = model_data.modelVersions;
 
+            if (!modelVersionId) {
+                const idsFromDomRetry = getCivitaiIdsFromPage();
+                if (idsFromDomRetry.modelVersionId) {
+                    modelVersionId = idsFromDomRetry.modelVersionId;
+                } else if (versions.length === 1 && versions[0]?.id) {
+                    modelVersionId = String(versions[0].id);
+                }
+            }
+
+            if (!modelVersionId) {
+                alert("未能识别当前模型版本ID");
+                return;
+            }
+
             for (const verItem of versions) {
                 // 匹配版本号
                 if (verItem.id.toString() === modelVersionId) {
@@ -888,8 +788,6 @@
                     let files = verItem.files;
                     let modelFile = '';
                     let split = '';
-                    // console.log(files);
-
                     if (files.length === 1) {
                         modelFile = files[0].name;
                         split = splitFilename(modelFile);
@@ -900,19 +798,21 @@
                         if (!selectedObject) {
                             return;
                         }
-                        // end
-                        // console.log("选择的对象:", `提交: ${selectedObject.name} (${selectedObject.sizeKB} KB)`);
-                        // model_name_ver = selectedObject.name
                         modelFile = selectedObject.name;
                         split = splitFilename(modelFile);
-                        // console.log(`文件名: ${selectedObject.name}`);
-                        // console.log(`  文件名部分: ${split.name}`);
-                        // console.log(`  扩展名: ${split.extension}`);
                         model_name_ver = split.name;
                     }
 
-                    // 模型介绍
-                    textDesc = ' \n\n-----关于此版本------\n\n' + verItem.description + '\n\n-----模型介绍------\n\n' + model_data.description + '\n\n-----其他参数------\n\n';
+                    // 模型介绍：优先保留页面右侧 "About this version" 的当前展示文本，接口内容作为兜底
+                    const aboutThisVersionText = extractCivitaiAboutThisVersionText();
+                    const pageModelDescription = normalizeMultilineText(extractCivitaiTextFromSecondSpoiler() || '');
+                    const versionDescription = normalizeMultilineText(aboutThisVersionText || htmlToPlainTextFormatted(verItem.description || ''));
+                    const modelDescription = normalizeMultilineText(pageModelDescription || htmlToPlainTextFormatted(model_data.description || ''));
+                    textDesc = ' \n\n-----关于此版本------\n\n'
+                        + (versionDescription || '无')
+                        + '\n\n-----模型介绍------\n\n'
+                        + (modelDescription || '无')
+                        + '\n\n-----其他参数------\n\n';
                     // 模型信息
                     let modelInfoJson = {
                         modelType: modelTypeName,
@@ -926,12 +826,11 @@
                     // 提示词列表
                     const promptList = []
 
-                    // 图片信息-------------
+                    // 图片与视频元数据：接口里包含当前版本的全部媒体资源
                     let authImages = verItem.images;
 
                     authImages = authImages.filter(item => item && (item.type === 'image' || item.type === 'video'));
 
-                    // console.log(authImages);
                     let images = [];
                     for (const img of authImages) {
                         if (img.type === 'image' || img.type === 'video') {
@@ -943,13 +842,8 @@
                     if (imageIds.length > 0) {
                         // 获取样图信息
                         example = await getImageExample(imageIds);
-                        // console.log(`example: ${JSON.stringify(example, null, 4)}`);
-                        // 🌟🌟🌟 在这里立即继续编写逻辑 🌟🌟🌟
-                        // 安全地使用 'example' 数组，因为它已经被赋值
                         if (example.length > 0) {
                             example.forEach(item => {
-                                // 对 example 数组中的每个 item 执行操作
-                                // console.log("Processing item:", item);
                                 let itemType = item?.result?.data?.json?.type ?? undefined;
                                 let meta = item?.result?.data?.json?.meta ?? undefined;
                                 if (meta !== undefined && (itemType === 'image' || itemType === 'video')) {
@@ -1075,7 +969,6 @@
                         triggerWord = triggerWord + "无";
                     }
                     modelInfoJson.triggerWord = triggerWord
-                    // console.log(JSON.stringify(modelInfoJson, null, 4));
 
                     // 获取文件句柄
                     const savejsonHandle = await modelDirHandle.getFileHandle(modelName + ".txt", { create: true });
@@ -1183,6 +1076,51 @@
         }
     }
 
+    function normalizeMultilineText(text) {
+        return String(text || '')
+            .replace(/\r\n/g, '\n')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n[ \t]+/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    function extractCivitaiSectionTextByHeading(headingTexts) {
+        // 直接按右侧卡片标题定位，优先保留页面真实展示出来的版本说明内容。
+        const targets = Array.isArray(headingTexts) ? headingTexts : [headingTexts];
+        const normalizedTargets = targets.map((item) => getTextContentNormalized(item).toLowerCase()).filter(Boolean);
+        if (normalizedTargets.length === 0) {
+            return '';
+        }
+
+        const headingElement = Array.from(document.querySelectorAll('p, span, div, h1, h2, h3, h4'))
+            .find((element) => {
+                const text = getTextContentNormalized(element).toLowerCase();
+                return normalizedTargets.includes(text);
+            });
+
+        const card = headingElement?.closest('[data-with-border="true"]');
+        if (!card) {
+            return '';
+        }
+
+        const clone = card.cloneNode(true);
+        clone.querySelectorAll('[data-first-section="true"]').forEach((element) => element.remove());
+        clone.querySelectorAll('button').forEach((button) => {
+            const text = getTextContentNormalized(button).toLowerCase();
+            if (text === 'show more' || text === 'show less') {
+                button.remove();
+            }
+        });
+
+        let text = htmlToPlainTextFormatted(clone.innerHTML);
+        normalizedTargets.forEach((target) => {
+            const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            text = text.replace(new RegExp(`^${escaped}\\s*`, 'i'), '');
+        });
+        return normalizeMultilineText(text);
+    }
+
 
     /**
      * 将JavaScript对象展开成纯文本，每个字段为一行，包含key和value。
@@ -1214,18 +1152,24 @@
     }
 
 
+    // 保留旧函数名，兼容原有调用点。
+    // 新版页面结构不稳定，因此这里会优先取第 2 个 spoiler，取不到再回退第 1 个。
     function extractCivitaiTextFromSecondSpoiler() {
-        // 获取所有的 mantine-Spoiler-content 元素
         const spoilerElements = document.querySelectorAll('.mantine-Spoiler-content');
-        // 检查是否有至少两个元素
-        if (spoilerElements.length < 2) {
-            console.warn("少于两个 .mantine-Spoiler-content 元素");
-            return null; // 或者返回一个空字符串 ""
+        if (spoilerElements.length === 0) {
+            console.warn("未找到 .mantine-Spoiler-content 元素");
+            return null;
         }
-        // 获取第二个元素
-        const secondSpoiler = spoilerElements[0];
-        // 提取文本内容，并替换 <p> 标签为换行符
-        return extractCivitaiText(secondSpoiler);
+
+        const candidates = [spoilerElements[1], spoilerElements[0]].filter(Boolean);
+        for (const element of candidates) {
+            const text = normalizeMultilineText(extractCivitaiText(element));
+            if (text) {
+                return text;
+            }
+        }
+
+        return null;
     }
 
     function extractCivitaiText(element) {
@@ -1243,6 +1187,10 @@
             }
         }
         return text;
+    }
+
+    function extractCivitaiAboutThisVersionText() {
+        return extractCivitaiSectionTextByHeading(['About this version']);
     }
 
     // 获取图像 ID 数组
@@ -1394,6 +1342,214 @@
         return { name: name, extension: extension };
     }
 
+    const civitaiPanelId = 'kaiery-liblib-helper-panel';
+
+    function getTextContentNormalized(element) {
+        return String(element?.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function ensurePanelInteractive(panelEl) {
+        if (!panelEl) {
+            return;
+        }
+
+        panelEl.style.display = 'flex';
+        panelEl.style.zIndex = '2147483647';
+        panelEl.style.pointerEvents = 'auto';
+        panelEl.style.isolation = 'isolate';
+
+        const parent = panelEl.parentElement;
+        if (parent) {
+            if (!parent.style.position) {
+                parent.style.position = 'relative';
+            }
+            parent.style.pointerEvents = 'auto';
+        }
+
+        panelEl.querySelectorAll('button, input, label').forEach((element) => {
+            element.style.pointerEvents = 'auto';
+        });
+    }
+
+    function positionCivitaiFloatingPanel(panelEl) {
+        if (!panelEl) {
+            return;
+        }
+
+        // 浮层不再插进右侧栏内部，而是悬浮在 body 下。
+        // 这样可避免 Civitai 切换版本后侧栏重渲染，把自定义按钮变成“可见但不可点”。
+        const anchorCard = findCivitaiInsertAnchor();
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1280;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+        const gap = 12;
+
+        let width = Math.min(320, Math.max(240, viewportWidth - 32));
+        let left = Math.max(12, viewportWidth - width - 16);
+        let top = 88;
+
+        if (anchorCard) {
+            const rect = anchorCard.getBoundingClientRect();
+            const preferredWidth = rect.width > 0
+                ? Math.max(220, Math.min(300, Math.round(rect.width * 0.85)))
+                : width;
+            width = preferredWidth;
+
+            panelEl.style.width = `${width}px`;
+            panelEl.style.position = 'fixed';
+            panelEl.style.visibility = 'hidden';
+            panelEl.style.left = '-9999px';
+            panelEl.style.top = '0';
+            const panelHeight = Math.max(120, Math.round(panelEl.getBoundingClientRect().height || panelEl.offsetHeight || 220));
+
+            const canPlaceRight = (viewportWidth - rect.right) >= width + gap + 12;
+            const canPlaceLeft = rect.left >= width + gap + 12;
+            const canPlaceAbove = rect.top >= panelHeight + gap + 72;
+            const bottomLimit = Math.max(12, viewportHeight - panelHeight - 12);
+
+            if (canPlaceRight) {
+                left = Math.min(Math.round(rect.right + gap), viewportWidth - width - 12);
+                top = Math.min(Math.max(72, Math.round(rect.top)), bottomLimit);
+            } else if (canPlaceLeft) {
+                left = Math.max(12, Math.round(rect.left - width - gap));
+                top = Math.min(Math.max(72, Math.round(rect.top)), bottomLimit);
+            } else if (canPlaceAbove) {
+                left = Math.max(12, Math.min(Math.round(rect.left), viewportWidth - width - 12));
+                top = Math.max(72, Math.round(rect.top - panelHeight - gap));
+            } else {
+                left = Math.max(12, Math.min(Math.round(rect.left), viewportWidth - width - 12));
+                top = Math.min(Math.max(72, Math.round(rect.bottom + gap)), bottomLimit);
+            }
+
+            panelEl.style.visibility = '';
+        }
+
+        panelEl.style.position = 'fixed';
+        panelEl.style.left = `${left}px`;
+        panelEl.style.top = `${top}px`;
+        panelEl.style.width = `${width}px`;
+        panelEl.style.maxHeight = `calc(100vh - ${top + 16}px)`;
+        panelEl.style.overflow = 'auto';
+    }
+
+    function mountCivitaiFloatingPanel(panelEl) {
+        if (!panelEl) {
+            return false;
+        }
+
+        if (panelEl.parentElement !== document.body) {
+            document.body.appendChild(panelEl);
+        }
+
+        ensurePanelInteractive(panelEl);
+        positionCivitaiFloatingPanel(panelEl);
+        return true;
+    }
+
+    function getCivitaiIdsFromPage() {
+        // 版本识别顺序：
+        // 1. URL 参数 modelVersionId
+        // 2. 当前页面下载链接
+        // 3. reviews 链接
+        // 4. 右侧代码块中的数字兜底
+        const result = {
+            modelId: '',
+            modelVersionId: ''
+        };
+
+        try {
+            const currentUrl = new URL(window.location.href);
+            const pathMatch = currentUrl.pathname.match(/\/models\/(\d+)/);
+            result.modelId = pathMatch?.[1] || '';
+            result.modelVersionId = currentUrl.searchParams.get('modelVersionId') || '';
+        } catch (_) {
+        }
+
+        if (!result.modelVersionId) {
+            const downloadLink = document.querySelector('a[href*="/api/download/models/"]');
+            const href = downloadLink?.getAttribute('href') || '';
+            const downloadMatch = href.match(/\/api\/download\/models\/(\d+)/);
+            if (downloadMatch?.[1]) {
+                result.modelVersionId = downloadMatch[1];
+            }
+        }
+
+        if (!result.modelVersionId) {
+            const reviewLink = document.querySelector('a[href*="modelVersionId="]');
+            const href = reviewLink?.getAttribute('href') || '';
+            const versionMatch = href.match(/modelVersionId=(\d+)/);
+            if (versionMatch?.[1]) {
+                result.modelVersionId = versionMatch[1];
+            }
+        }
+
+        if (!result.modelVersionId) {
+            const codeValues = Array.from(document.querySelectorAll('.mantine-Code-root'))
+                .map((element) => getTextContentNormalized(element))
+                .filter((text) => /^\d+$/.test(text));
+            if (codeValues.length >= 2) {
+                result.modelVersionId = codeValues[1];
+            }
+        }
+
+        return result;
+    }
+
+    function findCivitaiInsertAnchor() {
+        const isCard = (element) => !!element?.matches?.('.mantine-Card-root[data-with-border="true"], [data-with-border="true"].mantine-Card-root');
+
+        // 优先找顶部动作卡片；找不到时回退到 Download 卡片。
+        const bidButton = Array.from(document.querySelectorAll('button'))
+            .find((button) => getTextContentNormalized(button) === 'Bid');
+        const bidCard = bidButton?.closest('[data-with-border="true"]');
+        if (isCard(bidCard) && bidCard.parentElement) {
+            return bidCard;
+        }
+
+        const downloadLink = document.querySelector('a[href*="/api/download/models/"]');
+        const downloadCard = downloadLink?.closest('[data-with-border="true"]');
+        if (isCard(downloadCard) && downloadCard.parentElement) {
+            const previousCard = downloadCard.previousElementSibling;
+            if (isCard(previousCard)) {
+                return previousCard;
+            }
+            return downloadCard;
+        }
+
+        const downloadTitle = Array.from(document.querySelectorAll('p, span'))
+            .find((element) => getTextContentNormalized(element) === 'Download');
+        const titleCard = downloadTitle?.closest('[data-with-border="true"]');
+        if (isCard(titleCard) && titleCard.parentElement) {
+            const previousCard = titleCard.previousElementSibling;
+            if (isCard(previousCard)) {
+                return previousCard;
+            }
+            return titleCard;
+        }
+
+        return null;
+    }
+
+    function tryInsertButtons(site, div1) {
+        if (!div1) {
+            return false;
+        }
+
+        if (site === 'liblib') {
+            const descElement = document.querySelector('[class^="ModelDescription_desc"]');
+            const actionCard = document.querySelector('[class^="ModelActionCard_modelActionCard"]');
+            if (descElement && actionCard?.parentNode) {
+                actionCard.parentNode.insertBefore(div1, actionCard);
+                return true;
+            }
+            return false;
+        }
+
+        if (site === 'civitai') {
+            return mountCivitaiFloatingPanel(div1);
+        }
+
+        return false;
+    }
 
 
 
@@ -1406,8 +1562,10 @@
     // 创建按钮
     // ---------------------------------------------------------------
     function createButtons(site) {
-        // 定义元素------------------------------------
+        // 统一创建控制面板。liblib 走原地插入，Civitai 走浮层模式。
         const div1 = document.createElement('div');
+        div1.id = civitaiPanelId;
+        div1.dataset.helperPanel = 'true';
         div1.style.display = 'flex';
         div1.style.flexDirection = 'column';
         div1.style.justifyContent = "space-between";
@@ -1455,8 +1613,8 @@
             coverTitle.textContent = '封面：';
             coverTitle.style.color = brandBlue;
             coverGroup.appendChild(coverTitle);
-            coverGroup.appendChild(createRadio(`${siteKey}_cover_mode`, 'image', '图片封面', coverSaveMode === 'image', (v) => { coverSaveMode = v; }));
-            coverGroup.appendChild(createRadio(`${siteKey}_cover_mode`, 'video', '视频封面', coverSaveMode === 'video', (v) => { coverSaveMode = v; }));
+            coverGroup.appendChild(createRadio(`${siteKey}_cover_mode`, 'image', '图片', coverSaveMode === 'image', (v) => { coverSaveMode = v; }));
+            coverGroup.appendChild(createRadio(`${siteKey}_cover_mode`, 'video', '视频', coverSaveMode === 'video', (v) => { coverSaveMode = v; }));
 
             // 下载图片单选：仅控制 model_name_ver 子文件夹内的图片下载；不影响封面、不影响文本文件写入
             const dlGroup = document.createElement('div');
@@ -1478,8 +1636,10 @@
         if (site === 'liblib') {
             div1.appendChild(createControls('liblib'));
             const button1 = document.createElement('button');
+            button1.type = 'button';
+            button1.dataset.helperAction = 'download-liblib';
             button1.textContent = '下载封面+生成信息';
-            button1.onclick = () => saveLibLibAuthImagesInfo(button1);
+            button1.addEventListener('click', () => saveLibLibAuthImagesInfo(button1));
             button1.style.padding = '15px';
             button1.style.width = "200px";
             button1.style.backgroundColor = 'red';
@@ -1487,12 +1647,24 @@
             button1.style.display = 'block';
             button1.style.flex = "1";
             button1.style.borderRadius = '8px'; // 设置圆角半径
+            button1.style.cursor = 'pointer';
+            button1.style.pointerEvents = 'auto';
             div1.appendChild(button1);
         } else if (site === 'civitai') {
+            div1.style.padding = '12px';
+            div1.style.background = 'var(--mantine-color-dark-6, #25262b)';
+            div1.style.border = '1px solid var(--mantine-color-dark-4, #373a40)';
+            div1.style.borderRadius = '8px';
+            div1.style.boxSizing = 'border-box';
+            div1.style.boxShadow = '0 8px 24px rgba(0, 0, 0, 0.35)';
+            div1.style.minWidth = '220px';
+            div1.style.maxWidth = '300px';
             div1.appendChild(createControls('civitai'));
             const button2 = document.createElement('button');
+            button2.type = 'button';
+            button2.dataset.helperAction = 'download-civitai';
             button2.textContent = '下载封面+生成信息';
-            button2.onclick = () => saveCivitaiModelInfo(button2);
+            button2.addEventListener('click', () => saveCivitaiModelInfo(button2));
             button2.style.padding = '15px';
             button2.style.width = "100%";
             button2.style.setProperty('background-color', 'blue', 'important'); // 使用 setProperty
@@ -1501,8 +1673,12 @@
             button2.style.flex = "1";
             button2.style.borderRadius = '4px';
             button2.style.marginBottom = '5px';
+            button2.style.cursor = 'pointer';
+            button2.style.pointerEvents = 'auto';
             div1.appendChild(button2);
         }
+
+        ensurePanelInteractive(div1);
 
         return div1;
     }
@@ -1511,49 +1687,43 @@
     // 监听器
     // ---------------------------------------------------------------
     function createObserver(site, div1) {
-        // 监听
-        const observer = new MutationObserver(function (mutations) {
-            let found = false;
-            mutations.forEach(function (mutation) {
-                if (mutation.type === 'childList' && !found) {
-                    const allElements = document.querySelectorAll('div');
-                    allElements.forEach(function (element) {
-                        const classNames = element.className.split(/\s+/);
-                        for (let i = 0; i < classNames.length; i++) {
-                            if (site === 'liblib') {
-                                if (classNames[i].startsWith('ModelDescription_desc')) {
-                                    found = true;
-                                    observer.disconnect(); // 停止观察
-                                    const actionCard = document.querySelector('[class^="ModelActionCard_modelActionCard"]');
-                                    if (actionCard) {
-                                        actionCard.parentNode.insertBefore(div1, actionCard);
-                                    }
-                                    break;
-                                }
-                            } else if (site === 'civitai') {
-                                if (classNames[i].includes('ModelVersionDetails')) {
-                                    found = true;
-                                    observer.disconnect(); // 停止观察
-                                    const targetElement = element;
-                                    // 确保目标元素存在
-                                    if (targetElement) {
-                                        // 将 div1 插入到 targetElement 的前面
-                                        targetElement.insertAdjacentElement('beforebegin', div1);
-                                        div1.style.display = 'block'; // 确保 div1 可见
-                                    } else {
-                                        console.warn("Civitai: 未找到 ModelVersionDetails 对应的元素。");
-                                    }
-                                    break;
-                                }
-                            }
-                            break;
-                        }
-                    });
-                }
+        let scheduled = false;
+
+        // 页面频繁重渲染时，重复执行“挂载 + 修复交互 + 重算位置”。
+        const healPanel = () => {
+            ensurePanelInteractive(div1);
+            tryInsertButtons(site, div1);
+        };
+
+        const scheduleInsert = () => {
+            if (scheduled) {
+                return;
+            }
+            scheduled = true;
+            requestAnimationFrame(() => {
+                scheduled = false;
+                healPanel();
+                [120, 400, 1000, 2200].forEach((delay) => {
+                    setTimeout(healPanel, delay);
+                });
             });
+        };
+
+        const observer = new MutationObserver(function (mutations) {
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList') {
+                    scheduleInsert();
+                    break;
+                }
+            }
         });
 
         observer.observe(document.body, { childList: true, subtree: true });
+        if (site === 'civitai') {
+            window.addEventListener('resize', scheduleInsert, { passive: true });
+            window.addEventListener('scroll', scheduleInsert, { passive: true });
+        }
+        scheduleInsert();
     }
 
     // ---------------------------------------------------------------
@@ -1561,7 +1731,6 @@
     // ---------------------------------------------------------------
     (function () {
         const site = currentSite();
-        // console.log("Current site:", site);
         const buttonsDiv = createButtons(site);
 
         if (site === 'liblib' || site === 'civitai') {
