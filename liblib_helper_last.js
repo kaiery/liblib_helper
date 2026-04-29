@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      3.0.1
+// @version      3.1.0
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -1342,7 +1342,8 @@
         return { name: name, extension: extension };
     }
 
-    const civitaiPanelId = 'kaiery-liblib-helper-panel';
+    const helperPanelId = 'kaiery-liblib-helper-panel';
+    const liblibPlaceholderId = 'kaiery-liblib-helper-placeholder';
 
     function getTextContentNormalized(element) {
         return String(element?.textContent || '').replace(/\s+/g, ' ').trim();
@@ -1369,6 +1370,85 @@
         panelEl.querySelectorAll('button, input, label').forEach((element) => {
             element.style.pointerEvents = 'auto';
         });
+    }
+
+    function findLibLibActionCard() {
+        return document.querySelector('[class^="ModelActionCard_modelActionCard"]');
+    }
+
+    function ensureLibLibPlaceholder(panelEl) {
+        const actionCard = findLibLibActionCard();
+        if (!actionCard?.parentElement || !panelEl) {
+            return null;
+        }
+
+        let placeholder = document.getElementById(liblibPlaceholderId);
+        if (!placeholder) {
+            placeholder = document.createElement('div');
+            placeholder.id = liblibPlaceholderId;
+            placeholder.dataset.helperPlaceholder = 'liblib';
+        }
+
+        // 占位块仍插在右栏原位置，保持页面布局；真正可点击的面板则挂在 body 下。
+        if (placeholder.parentElement !== actionCard.parentElement || placeholder.nextElementSibling !== actionCard) {
+            actionCard.parentElement.insertBefore(placeholder, actionCard);
+        }
+
+        const actionRect = actionCard.getBoundingClientRect();
+        const width = Math.max(220, Math.round(actionRect.width || actionCard.offsetWidth || 260));
+
+        panelEl.style.width = `${width}px`;
+        panelEl.style.position = 'fixed';
+        panelEl.style.visibility = 'hidden';
+        panelEl.style.left = '-9999px';
+        panelEl.style.top = '0';
+
+        const panelHeight = Math.max(72, Math.round(panelEl.getBoundingClientRect().height || panelEl.offsetHeight || 96));
+
+        placeholder.style.display = 'block';
+        placeholder.style.width = '100%';
+        placeholder.style.minHeight = `${panelHeight}px`;
+        placeholder.style.pointerEvents = 'none';
+
+        panelEl.style.visibility = '';
+        return placeholder;
+    }
+
+    function positionLibLibFloatingPanel(panelEl) {
+        if (!panelEl) {
+            return;
+        }
+
+        const placeholder = ensureLibLibPlaceholder(panelEl);
+        if (!placeholder) {
+            return;
+        }
+
+        const rect = placeholder.getBoundingClientRect();
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1280;
+        const width = Math.max(220, Math.round(rect.width || panelEl.offsetWidth || 260));
+        const left = Math.max(12, Math.min(Math.round(rect.left), viewportWidth - width - 12));
+        const top = Math.max(12, Math.round(rect.top));
+
+        panelEl.style.position = 'fixed';
+        panelEl.style.left = `${left}px`;
+        panelEl.style.top = `${top}px`;
+        panelEl.style.width = `${width}px`;
+        panelEl.style.maxWidth = `${width}px`;
+    }
+
+    function mountLibLibFloatingPanel(panelEl) {
+        if (!panelEl) {
+            return false;
+        }
+
+        if (panelEl.parentElement !== document.body) {
+            document.body.appendChild(panelEl);
+        }
+
+        ensurePanelInteractive(panelEl);
+        positionLibLibFloatingPanel(panelEl);
+        return true;
     }
 
     function positionCivitaiFloatingPanel(panelEl) {
@@ -1535,13 +1615,7 @@
         }
 
         if (site === 'liblib') {
-            const descElement = document.querySelector('[class^="ModelDescription_desc"]');
-            const actionCard = document.querySelector('[class^="ModelActionCard_modelActionCard"]');
-            if (descElement && actionCard?.parentNode) {
-                actionCard.parentNode.insertBefore(div1, actionCard);
-                return true;
-            }
-            return false;
+            return mountLibLibFloatingPanel(div1);
         }
 
         if (site === 'civitai') {
@@ -1564,7 +1638,7 @@
     function createButtons(site) {
         // 统一创建控制面板。liblib 走原地插入，Civitai 走浮层模式。
         const div1 = document.createElement('div');
-        div1.id = civitaiPanelId;
+        div1.id = helperPanelId;
         div1.dataset.helperPanel = 'true';
         div1.style.display = 'flex';
         div1.style.flexDirection = 'column';
@@ -1634,6 +1708,8 @@
         };
 
         if (site === 'liblib') {
+            div1.style.padding = '8px 0';
+            div1.style.boxSizing = 'border-box';
             div1.appendChild(createControls('liblib'));
             const button1 = document.createElement('button');
             button1.type = 'button';
@@ -1719,7 +1795,7 @@
         });
 
         observer.observe(document.body, { childList: true, subtree: true });
-        if (site === 'civitai') {
+        if (site === 'liblib' || site === 'civitai') {
             window.addEventListener('resize', scheduleInsert, { passive: true });
             window.addEventListener('scroll', scheduleInsert, { passive: true });
         }
