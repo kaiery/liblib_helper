@@ -101,6 +101,40 @@
     }
 
     // 从 GM_xmlhttpRequest 的 responseHeaders 文本中提取指定 header（不区分大小写）
+    function getSafeExtensionFromUrl(url, fallbackExt) {
+        let ext = '';
+        try {
+            const cleanUrl = normalizeUrl(url);
+            const u = new URL(cleanUrl);
+            const lastSeg = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || '');
+            const dotIndex = lastSeg.lastIndexOf('.');
+            ext = dotIndex >= 0 ? lastSeg.substring(dotIndex + 1) : '';
+        } catch (_) {
+            ext = '';
+        }
+        ext = sanitizeFilename(ext).replace(/^\.+/, '');
+        return ext || sanitizeFilename(fallbackExt || 'jpg') || 'jpg';
+    }
+
+    function getCivitaiImageUrlCandidates(url) {
+        const urls = [];
+        try {
+            const cleanUrl = normalizeUrl(url);
+            urls.push(cleanUrl);
+            const u = new URL(cleanUrl);
+            if (u.hostname.includes('image.civitai.com') && u.pathname.includes('/original=true/')) {
+                for (const width of ['width=1024', 'width=768', 'width=450']) {
+                    const candidate = new URL(cleanUrl);
+                    candidate.pathname = candidate.pathname.replace('/original=true/', `/${width}/`);
+                    urls.push(candidate.toString());
+                }
+            }
+        } catch (_) {
+            urls.push(url);
+        }
+        return Array.from(new Set(urls));
+    }
+
     function parseHeaderValue(responseHeaders, headerName) {
         const match = String(responseHeaders || '').match(new RegExp(`^\\s*${headerName}\\s*:\\s*([^\\r\\n;]+)`, 'im'));
         return match?.[1]?.trim() || '';
@@ -802,6 +836,15 @@
                         split = splitFilename(modelFile);
                         model_name_ver = split.name;
                     }
+                    const rawModelDirName = model_name_ver;
+                    model_name_ver = sanitizeFilename(model_name_ver).trim() || `model_${modelVersionId || Date.now()}`;
+                    console.log('[liblib_helper][civitai] modelDirName', {
+                        raw: rawModelDirName,
+                        safe: model_name_ver,
+                        rawLength: String(rawModelDirName || '').length,
+                        safeLength: model_name_ver.length,
+                        rawCharCodes: Array.from(String(rawModelDirName || '')).map(ch => ch.charCodeAt(0))
+                    });
 
                     // 模型介绍：优先保留页面右侧 "About this version" 的当前展示文本，接口内容作为兜底
                     const aboutThisVersionText = extractCivitaiAboutThisVersionText();
@@ -915,18 +958,40 @@
 
                     // 封面选择策略由全局变量 coverSaveMode 控制
                     if (coverItem) {
+                        const coverFallbackItems = [
+                            coverItem,
+                            ...mediaCandidates.filter(item => item && item.type === 'image' && item !== coverItem)
+                        ];
                         const coverUrl = coverItem.url;
-                        let coverExt = coverUrl.split("/").pop().split(".").pop();
-                        const tmp = coverExt.indexOf("?");
-                        if (tmp > 0) {
-                            coverExt = coverExt.substring(0, tmp);
-                        }
+                        let coverExt = getSafeExtensionFromUrl(coverUrl, 'jpg');
                         try {
                             const unitLabel = `下载 ${completedUnits + 1}/${totalUnits}`;
                             setOverallProgress(0, unitLabel);
-                            const fileName = model_name_ver + "." + coverExt;
+                            const fileName = sanitizeFilename(model_name_ver + "." + coverExt);
                             const picHandle = await dirHandle.getFileHandle(fileName, { create: true });
-                            await downloadOne(coverUrl, coverExt, picHandle, unitLabel);
+                            let lastCoverError = null;
+                            for (const fallbackItem of coverFallbackItems) {
+                                const fallbackUrl = fallbackItem.url;
+                                const coverUrlCandidates = getCivitaiImageUrlCandidates(fallbackUrl);
+                                console.log('[liblib_helper][civitai] coverUrlCandidates', coverUrlCandidates);
+                                for (const candidateUrl of coverUrlCandidates) {
+                                    try {
+                                        await downloadOne(candidateUrl, coverExt, picHandle, unitLabel);
+                                        lastCoverError = null;
+                                        console.log('[liblib_helper][civitai] coverUrl success', candidateUrl);
+                                        break;
+                                    } catch (error) {
+                                        lastCoverError = error;
+                                        console.warn('[liblib_helper][civitai] coverUrl failed', candidateUrl, error);
+                                    }
+                                }
+                                if (!lastCoverError) {
+                                    break;
+                                }
+                            }
+                            if (lastCoverError) {
+                                throw lastCoverError;
+                            }
                             completedUnits += 1;
                             console.log("Image written to file:", fileName);
                         } catch (error) {
