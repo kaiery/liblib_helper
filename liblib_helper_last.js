@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      3.1.1
+// @version      3.1.2
 // @description  liblib|civitai助手，下载封面+模型信息
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -848,9 +848,13 @@
 
                     // 模型介绍：优先保留页面右侧 "About this version" 的当前展示文本，接口内容作为兜底
                     const aboutThisVersionText = extractCivitaiAboutThisVersionText();
-                    const pageModelDescription = normalizeMultilineText(extractCivitaiTextFromSecondSpoiler() || '');
+                    const apiModelDescription = normalizeMultilineText(htmlToPlainTextFormatted(model_data.description || ''));
+                    const pageModelDescriptionCandidate = normalizeMultilineText(extractCivitaiTextFromSecondSpoiler() || '');
+                    const pageModelDescription = isCivitaiPageDescriptionCompatibleWithApi(pageModelDescriptionCandidate, apiModelDescription)
+                        ? pageModelDescriptionCandidate
+                        : '';
                     const versionDescription = normalizeMultilineText(aboutThisVersionText || htmlToPlainTextFormatted(verItem.description || ''));
-                    const modelDescription = normalizeMultilineText(pageModelDescription || htmlToPlainTextFormatted(model_data.description || ''));
+                    const modelDescription = normalizeMultilineText(pageModelDescription || apiModelDescription);
                     textDesc = ' \n\n-----关于此版本------\n\n'
                         + (versionDescription || '无')
                         + '\n\n-----模型介绍------\n\n'
@@ -1217,21 +1221,119 @@
     }
 
 
-    // 保留旧函数名，兼容原有调用点。
-    // 新版页面结构不稳定，因此这里会优先取第 2 个 spoiler，取不到再回退第 1 个。
+    // Keep the old function name for existing callers.
+    // Civitai reuses Spoiler for descriptions, reviews, and comments, so select by context.
+    function isCivitaiPageDescriptionCompatibleWithApi(pageText, apiText) {
+        const page = normalizeMultilineText(pageText || '');
+        const api = normalizeMultilineText(apiText || '');
+        if (!page) {
+            return false;
+        }
+        if (!api) {
+            return true;
+        }
+
+        const compactPage = page.toLowerCase().replace(/\s+/g, '');
+        const compactApi = api.toLowerCase().replace(/\s+/g, '');
+        if (compactPage.includes(compactApi.slice(0, Math.min(120, compactApi.length)))) {
+            return true;
+        }
+        if (compactApi.includes(compactPage.slice(0, Math.min(120, compactPage.length)))) {
+            return true;
+        }
+
+        const apiLines = api.split('\n')
+            .map((line) => line.trim())
+            .filter((line) => line.length >= 16)
+            .slice(0, 5);
+        if (apiLines.some((line) => {
+            const compactLine = line.toLowerCase().replace(/\s+/g, '').slice(0, Math.min(80, line.length));
+            return compactLine && compactPage.includes(compactLine);
+        })) {
+            return true;
+        }
+
+        const tokenize = (text) => Array.from(new Set(String(text || '')
+            .toLowerCase()
+            .match(/[a-z0-9_\-]{3,}|[\u4e00-\u9fff]/g) || []));
+        const pageTokens = tokenize(page);
+        const apiTokens = tokenize(api);
+        if (pageTokens.length === 0 || apiTokens.length === 0) {
+            return false;
+        }
+
+        const apiSet = new Set(apiTokens);
+        const overlap = pageTokens.filter((token) => apiSet.has(token)).length;
+        return overlap / Math.min(pageTokens.length, apiTokens.length) >= 0.25;
+    }
+
+    function isCivitaiNonModelDescriptionSpoiler(element) {
+        const badContextPattern = /(comment|comments|review|reviews|discussion|discussions|post|posts|feed|thread|reaction|reply|replies)/i;
+        for (let parent = element; parent && parent !== document.body; parent = parent.parentElement) {
+            const className = typeof parent.className === 'string' ? parent.className : '';
+            const signature = [
+                parent.id,
+                className,
+                parent.getAttribute?.('aria-label'),
+                parent.getAttribute?.('data-testid'),
+                parent.getAttribute?.('data-section'),
+                parent.getAttribute?.('role')
+            ].filter(Boolean).join(' ');
+            if (badContextPattern.test(signature)) {
+                return true;
+            }
+        }
+
+        const card = element.closest?.('[data-with-border="true"]');
+        if (card) {
+            const cardText = getTextContentNormalized(card).toLowerCase();
+            if (/^(about this version|download|details|stats|reviews)\b/.test(cardText)) {
+                return true;
+            }
+        }
+
+        const scope = element.closest?.('article, section, [role="region"], [data-with-border="true"]');
+        if (scope) {
+            const headings = Array.from(scope.querySelectorAll('h1, h2, h3, h4, [role="heading"]'))
+                .map((heading) => getTextContentNormalized(heading).toLowerCase())
+                .filter(Boolean);
+            if (headings.some((heading) => /^(comments?|reviews?|discussions?|posts?)\b/.test(heading))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     function extractCivitaiTextFromSecondSpoiler() {
-        const spoilerElements = document.querySelectorAll('.mantine-Spoiler-content');
+        const spoilerElements = Array.from(document.querySelectorAll('.mantine-Spoiler-content'));
         if (spoilerElements.length === 0) {
             console.warn("未找到 .mantine-Spoiler-content 元素");
             return null;
         }
 
-        const candidates = [spoilerElements[1], spoilerElements[0]].filter(Boolean);
-        for (const element of candidates) {
-            const text = normalizeMultilineText(extractCivitaiText(element));
-            if (text) {
-                return text;
-            }
+        const candidates = spoilerElements
+            .map((element, index) => {
+                const text = normalizeMultilineText(extractCivitaiText(element));
+                if (!text || isCivitaiNonModelDescriptionSpoiler(element)) {
+                    return null;
+                }
+
+                const rect = element.getBoundingClientRect?.();
+                const inLeftContent = rect && rect.left < window.innerWidth * 0.72;
+                const inBorderedCard = !!element.closest?.('[data-with-border="true"]');
+                const score =
+                    (inLeftContent ? 60 : 0) +
+                    (!inBorderedCard ? 30 : -30) +
+                    Math.min(text.length / 80, 40) -
+                    index;
+                return { text, score };
+            })
+            .filter(Boolean)
+            .sort((a, b) => b.score - a.score);
+
+        if (candidates.length > 0) {
+            return candidates[0].text;
         }
 
         return null;
