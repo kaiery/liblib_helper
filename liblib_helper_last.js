@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      3.1.2
-// @description  liblib|civitai助手，下载封面+模型信息
+// @version      3.2.0
+// @description  liblib|civitai助手，下载封面+模型信息，支持拖动悬浮面板
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
 // @match        https://www.liblib.art/modelinfo/*
@@ -1511,9 +1511,250 @@
 
     const helperPanelId = 'kaiery-liblib-helper-panel';
     const liblibPlaceholderId = 'kaiery-liblib-helper-placeholder';
+    const helperPanelPositionStoragePrefix = 'kaiery-liblib-helper-panel-position-v1';
+    const helperPanelViewportMargin = 12;
 
     function getTextContentNormalized(element) {
         return String(element?.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function getHelperPanelStorageKey(panelEl) {
+        const site = panelEl?.dataset?.helperSite || 'unknown';
+        return `${helperPanelPositionStoragePrefix}:${site}`;
+    }
+
+    function readStoredHelperPanelPosition(panelEl) {
+        try {
+            const storedValue = localStorage.getItem(getHelperPanelStorageKey(panelEl));
+            if (!storedValue) {
+                return null;
+            }
+
+            const position = JSON.parse(storedValue);
+            if (!Number.isFinite(position?.left) || !Number.isFinite(position?.top)) {
+                return null;
+            }
+            return position;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function saveHelperPanelPosition(panelEl, position) {
+        try {
+            localStorage.setItem(getHelperPanelStorageKey(panelEl), JSON.stringify(position));
+        } catch (_) {
+        }
+    }
+
+    function clearStoredHelperPanelPosition(panelEl) {
+        try {
+            localStorage.removeItem(getHelperPanelStorageKey(panelEl));
+        } catch (_) {
+        }
+    }
+
+    function clampHelperPanelPosition(panelEl, left, top) {
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1280;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+        const rect = panelEl.getBoundingClientRect();
+        const width = Math.max(1, Math.round(rect.width || panelEl.offsetWidth || 260));
+        const height = Math.max(1, Math.round(rect.height || panelEl.offsetHeight || 120));
+        const maxLeft = Math.max(helperPanelViewportMargin, viewportWidth - width - helperPanelViewportMargin);
+        const maxTop = Math.max(helperPanelViewportMargin, viewportHeight - height - helperPanelViewportMargin);
+
+        return {
+            left: Math.round(Math.min(Math.max(left, helperPanelViewportMargin), maxLeft)),
+            top: Math.round(Math.min(Math.max(top, helperPanelViewportMargin), maxTop))
+        };
+    }
+
+    function setManualHelperPanelPosition(panelEl, left, top, persist = false) {
+        const position = clampHelperPanelPosition(panelEl, left, top);
+        panelEl.dataset.helperPositionMode = 'manual';
+        panelEl.dataset.helperPositionLeft = String(position.left);
+        panelEl.dataset.helperPositionTop = String(position.top);
+        panelEl.style.position = 'fixed';
+        panelEl.style.left = `${position.left}px`;
+        panelEl.style.top = `${position.top}px`;
+        panelEl.style.transform = '';
+        panelEl.style.maxHeight = `${Math.max(120, (window.innerHeight || 800) - position.top - helperPanelViewportMargin)}px`;
+        panelEl.style.overflow = 'auto';
+
+        if (persist) {
+            saveHelperPanelPosition(panelEl, position);
+        }
+        return position;
+    }
+
+    function restoreHelperPanelPosition(panelEl) {
+        if (panelEl.dataset.helperPositionRestored === 'true') {
+            return;
+        }
+
+        panelEl.dataset.helperPositionRestored = 'true';
+        const position = readStoredHelperPanelPosition(panelEl);
+        if (position) {
+            panelEl.dataset.helperPositionMode = 'manual';
+            panelEl.dataset.helperPositionLeft = String(position.left);
+            panelEl.dataset.helperPositionTop = String(position.top);
+        }
+    }
+
+    function applyManualHelperPanelPosition(panelEl) {
+        if (panelEl?.dataset?.helperPositionMode !== 'manual') {
+            return false;
+        }
+        if (panelEl.dataset.helperDragging === 'true') {
+            return true;
+        }
+
+        const left = Number(panelEl.dataset.helperPositionLeft);
+        const top = Number(panelEl.dataset.helperPositionTop);
+        if (!Number.isFinite(left) || !Number.isFinite(top)) {
+            panelEl.dataset.helperPositionMode = 'auto';
+            return false;
+        }
+
+        setManualHelperPanelPosition(panelEl, left, top);
+        return true;
+    }
+
+    function resetHelperPanelPosition(panelEl) {
+        clearStoredHelperPanelPosition(panelEl);
+        panelEl.dataset.helperPositionMode = 'auto';
+        delete panelEl.dataset.helperPositionLeft;
+        delete panelEl.dataset.helperPositionTop;
+        panelEl.style.transform = '';
+        panelEl.style.maxHeight = '';
+        panelEl.style.overflow = '';
+
+        if (panelEl.dataset.helperSite === 'liblib') {
+            positionLibLibFloatingPanel(panelEl);
+        } else if (panelEl.dataset.helperSite === 'civitai') {
+            positionCivitaiFloatingPanel(panelEl);
+        }
+    }
+
+    function enableHelperPanelDragging(panelEl) {
+        const dragHandle = panelEl?.querySelector('[data-helper-drag-handle]');
+        if (!dragHandle || panelEl.dataset.helperDraggable === 'true') {
+            return;
+        }
+
+        panelEl.dataset.helperDraggable = 'true';
+        let dragState = null;
+        let animationFrame = 0;
+
+        const renderDragPosition = () => {
+            animationFrame = 0;
+            if (!dragState) {
+                return;
+            }
+
+            const position = clampHelperPanelPosition(panelEl, dragState.nextLeft, dragState.nextTop);
+            dragState.renderedLeft = position.left;
+            dragState.renderedTop = position.top;
+            const translateX = position.left - dragState.startLeft;
+            const translateY = position.top - dragState.startTop;
+            panelEl.style.transform = `translate3d(${translateX}px, ${translateY}px, 0)`;
+        };
+
+        const finishDragging = (event) => {
+            if (!dragState || (event.pointerId !== undefined && event.pointerId !== dragState.pointerId)) {
+                return;
+            }
+
+            if (animationFrame) {
+                cancelAnimationFrame(animationFrame);
+                renderDragPosition();
+            }
+
+            const left = Number.isFinite(dragState.renderedLeft) ? dragState.renderedLeft : dragState.startLeft;
+            const top = Number.isFinite(dragState.renderedTop) ? dragState.renderedTop : dragState.startTop;
+            const pointerId = dragState.pointerId;
+            dragState = null;
+            panelEl.dataset.helperDragging = 'false';
+            dragHandle.style.cursor = 'grab';
+            setManualHelperPanelPosition(panelEl, left, top, true);
+
+            if (dragHandle.hasPointerCapture?.(pointerId)) {
+                dragHandle.releasePointerCapture(pointerId);
+            }
+        };
+
+        dragHandle.addEventListener('pointerdown', (event) => {
+            if (event.button !== 0 || event.target.closest('button, input, label, a')) {
+                return;
+            }
+
+            const rect = panelEl.getBoundingClientRect();
+            panelEl.style.left = `${Math.round(rect.left)}px`;
+            panelEl.style.top = `${Math.round(rect.top)}px`;
+            panelEl.style.transform = '';
+            panelEl.dataset.helperDragging = 'true';
+            dragHandle.style.cursor = 'grabbing';
+            dragState = {
+                pointerId: event.pointerId,
+                pointerStartX: event.clientX,
+                pointerStartY: event.clientY,
+                startLeft: Math.round(rect.left),
+                startTop: Math.round(rect.top),
+                nextLeft: Math.round(rect.left),
+                nextTop: Math.round(rect.top),
+                renderedLeft: Math.round(rect.left),
+                renderedTop: Math.round(rect.top)
+            };
+            dragHandle.setPointerCapture?.(event.pointerId);
+            event.preventDefault();
+        });
+
+        dragHandle.addEventListener('pointermove', (event) => {
+            if (!dragState || event.pointerId !== dragState.pointerId) {
+                return;
+            }
+
+            dragState.nextLeft = dragState.startLeft + event.clientX - dragState.pointerStartX;
+            dragState.nextTop = dragState.startTop + event.clientY - dragState.pointerStartY;
+            if (!animationFrame) {
+                animationFrame = requestAnimationFrame(renderDragPosition);
+            }
+        });
+
+        dragHandle.addEventListener('pointerup', finishDragging);
+        dragHandle.addEventListener('pointercancel', finishDragging);
+        dragHandle.addEventListener('lostpointercapture', finishDragging);
+
+        dragHandle.addEventListener('keydown', (event) => {
+            const direction = {
+                ArrowLeft: [-1, 0],
+                ArrowRight: [1, 0],
+                ArrowUp: [0, -1],
+                ArrowDown: [0, 1]
+            }[event.key];
+            if (!direction) {
+                return;
+            }
+
+            const rect = panelEl.getBoundingClientRect();
+            const step = event.shiftKey ? 1 : 10;
+            setManualHelperPanelPosition(
+                panelEl,
+                rect.left + direction[0] * step,
+                rect.top + direction[1] * step,
+                true
+            );
+            event.preventDefault();
+        });
+
+        dragHandle.addEventListener('dblclick', (event) => {
+            if (!event.target.closest('button, input, label, a')) {
+                resetHelperPanelPosition(panelEl);
+            }
+        });
+
+        const resetButton = panelEl.querySelector('[data-helper-reset-position]');
+        resetButton?.addEventListener('click', () => resetHelperPanelPosition(panelEl));
     }
 
     function ensurePanelInteractive(panelEl) {
@@ -1585,9 +1826,16 @@
         if (!panelEl) {
             return;
         }
+        if (panelEl.dataset.helperDragging === 'true') {
+            return;
+        }
 
         const placeholder = ensureLibLibPlaceholder(panelEl);
         if (!placeholder) {
+            return;
+        }
+
+        if (applyManualHelperPanelPosition(panelEl)) {
             return;
         }
 
@@ -1613,13 +1861,18 @@
             document.body.appendChild(panelEl);
         }
 
+        restoreHelperPanelPosition(panelEl);
         ensurePanelInteractive(panelEl);
+        enableHelperPanelDragging(panelEl);
         positionLibLibFloatingPanel(panelEl);
         return true;
     }
 
     function positionCivitaiFloatingPanel(panelEl) {
         if (!panelEl) {
+            return;
+        }
+        if (panelEl.dataset.helperDragging === 'true' || applyManualHelperPanelPosition(panelEl)) {
             return;
         }
 
@@ -1687,7 +1940,9 @@
             document.body.appendChild(panelEl);
         }
 
+        restoreHelperPanelPosition(panelEl);
         ensurePanelInteractive(panelEl);
+        enableHelperPanelDragging(panelEl);
         positionCivitaiFloatingPanel(panelEl);
         return true;
     }
@@ -1807,12 +2062,60 @@
         const div1 = document.createElement('div');
         div1.id = helperPanelId;
         div1.dataset.helperPanel = 'true';
+        div1.dataset.helperSite = site;
         div1.style.display = 'flex';
         div1.style.flexDirection = 'column';
         div1.style.justifyContent = "space-between";
         div1.style.alignItems = "stretch";
         div1.style.gap = "6px";
         const brandBlue = '#1E88E5';
+        const dragControlColor = site === 'civitai' ? '#64B5F6' : '#1565C0';
+
+        const dragBar = document.createElement('div');
+        dragBar.style.display = 'flex';
+        dragBar.style.alignItems = 'center';
+        dragBar.style.gap = '8px';
+        dragBar.style.minHeight = '28px';
+        dragBar.style.padding = '3px 6px';
+        dragBar.style.borderRadius = '6px';
+        dragBar.style.background = site === 'civitai'
+            ? 'rgba(37, 38, 43, 0.96)'
+            : 'rgba(255, 255, 255, 0.96)';
+
+        const dragHandle = document.createElement('span');
+        dragHandle.dataset.helperDragHandle = 'true';
+        dragHandle.tabIndex = 0;
+        dragHandle.setAttribute('role', 'button');
+        dragHandle.setAttribute('aria-label', '拖动悬浮面板');
+        dragHandle.title = '拖动面板；双击恢复默认位置；方向键可微调';
+        dragHandle.textContent = '拖动面板';
+        dragHandle.style.flex = '1';
+        dragHandle.style.color = dragControlColor;
+        dragHandle.style.fontSize = '12px';
+        dragHandle.style.fontWeight = '600';
+        dragHandle.style.lineHeight = '22px';
+        dragHandle.style.cursor = 'grab';
+        dragHandle.style.userSelect = 'none';
+        dragHandle.style.touchAction = 'none';
+        dragHandle.style.outlineOffset = '2px';
+
+        const resetPositionButton = document.createElement('button');
+        resetPositionButton.type = 'button';
+        resetPositionButton.dataset.helperResetPosition = 'true';
+        resetPositionButton.textContent = '复位';
+        resetPositionButton.title = '恢复面板默认位置';
+        resetPositionButton.style.padding = '2px 7px';
+        resetPositionButton.style.border = `1px solid ${dragControlColor}`;
+        resetPositionButton.style.borderRadius = '5px';
+        resetPositionButton.style.background = 'transparent';
+        resetPositionButton.style.color = dragControlColor;
+        resetPositionButton.style.fontSize = '12px';
+        resetPositionButton.style.lineHeight = '18px';
+        resetPositionButton.style.cursor = 'pointer';
+
+        dragBar.appendChild(dragHandle);
+        dragBar.appendChild(resetPositionButton);
+        div1.appendChild(dragBar);
 
         // 统一生成 radio：用于控制“封面选图/选视频”和“是否下载子文件夹内图片”
         const createRadio = (groupName, value, labelText, checked, onChange) => {
