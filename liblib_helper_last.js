@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         liblib|civitai助手-封面+模型信息
 // @namespace    http://tampermonkey.net/
-// @version      3.2.0
+// @version      3.2.1
 // @description  liblib|civitai助手，下载封面+模型信息，支持拖动悬浮面板
 // @author       kaiery
 // @match        https://www.liblib.ai/modelinfo/*
@@ -25,7 +25,7 @@
     // 封面选择模式：
     // - image：封面优先选图片；若无图片则兜底选第一个媒体
     // - video：封面优先选视频；若无视频则兜底选第一个图片，再兜底第一个媒体
-    let coverSaveMode = 'image';
+    let coverSaveMode = 'video';
     // 是否下载 model_name_ver 子文件夹内的媒体图片（封面始终下载，不受该开关影响）
     let downloadImages = true;
 
